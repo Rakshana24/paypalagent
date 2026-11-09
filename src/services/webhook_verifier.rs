@@ -46,18 +46,36 @@ impl WebhookVerifierService {
         headers: &PayPalWebhookHeaders,
         webhook_event: &serde_json::Value,
     ) -> Result<(), AppError> {
-        let status = self.verify_signature_status(headers, webhook_event).await?;
+        self.verify_signature_with_raw(headers, webhook_event, None)
+            .await
+    }
+
+    /// Verifies the authenticity of a PayPal webhook notification, preserving raw request bytes for diagnostic comparison.
+    pub async fn verify_signature_with_raw(
+        &self,
+        headers: &PayPalWebhookHeaders,
+        webhook_event: &serde_json::Value,
+        raw_body: Option<&[u8]>,
+    ) -> Result<(), AppError> {
+        let status = self
+            .verify_signature_status_with_raw(headers, webhook_event, raw_body)
+            .await?;
 
         if status.is_success() {
             info!(
                 transmission_id = %headers.transmission_id,
-                "PayPal webhook signature successfully verified"
+                auth_algo = %headers.auth_algo,
+                "PayPal webhook signature successfully verified (verification_status=SUCCESS)"
             );
             Ok(())
         } else {
             warn!(
                 transmission_id = %headers.transmission_id,
-                "PayPal webhook signature verification REJECTED by PayPal"
+                auth_algo = %headers.auth_algo,
+                webhook_id = %self.config.validate_webhook_id().unwrap_or("UNCONFIGURED"),
+                rejection_reason = "PAYPAL_SIGNATURE_VERIFICATION_REJECTED",
+                verification_status = ?status,
+                "PayPal webhook signature verification REJECTED by PayPal: verification_status=FAILURE"
             );
             Err(AppError::WebhookVerificationFailed(
                 "PayPal webhook signature verification failed (status: FAILURE)".to_string(),
@@ -71,14 +89,65 @@ impl WebhookVerifierService {
         headers: &PayPalWebhookHeaders,
         webhook_event: &serde_json::Value,
     ) -> Result<WebhookVerificationStatus, AppError> {
+        self.verify_signature_status_with_raw(headers, webhook_event, None)
+            .await
+    }
+
+    /// Verifies the webhook signature and returns the raw `WebhookVerificationStatus` from PayPal,
+    /// recording diagnostic telemetry on raw request bytes preservation and distinguishing rejection causes.
+    pub async fn verify_signature_status_with_raw(
+        &self,
+        headers: &PayPalWebhookHeaders,
+        webhook_event: &serde_json::Value,
+        raw_body: Option<&[u8]>,
+    ) -> Result<WebhookVerificationStatus, AppError> {
+        // Diagnostic telemetry: Inspect preserved raw request bytes vs re-serialized value
+        if let Some(bytes) = raw_body {
+            let reserialized = serde_json::to_vec(webhook_event).unwrap_or_default();
+            if reserialized != bytes {
+                debug!(
+                    transmission_id = %headers.transmission_id,
+                    raw_len = bytes.len(),
+                    reserialized_len = reserialized.len(),
+                    "Diagnostic note: parsed serde_json::Value serialization differs from original raw request bytes"
+                );
+            } else {
+                debug!(
+                    transmission_id = %headers.transmission_id,
+                    raw_len = bytes.len(),
+                    "Diagnostic note: parsed serde_json::Value matches raw request bytes byte-for-byte"
+                );
+            }
+        }
+
         // 1. Validate configured webhook ID
         let webhook_id = self.config.validate_webhook_id()?;
 
-        // 2. Validate certificate URL structure
-        headers.validate_cert_url()?;
+        // 2. Validate certificate URL structure (distinguishing local cert validation rejection)
+        if let Err(err) = headers.validate_cert_url() {
+            warn!(
+                transmission_id = %headers.transmission_id,
+                cert_url = %headers.cert_url,
+                error = %err,
+                rejection_reason = "LOCAL_CERT_URL_VALIDATION_FAILED",
+                "PayPal webhook rejected: Local certificate URL validation failed before calling PayPal API"
+            );
+            return Err(err);
+        }
 
-        // 3. Obtain valid OAuth access token from existing auth service
-        let access_token = self.auth_service.get_valid_access_token().await?;
+        // 3. Obtain valid OAuth access token from existing auth service (distinguishing OAuth failure)
+        let access_token = match self.auth_service.get_valid_access_token().await {
+            Ok(token) => token,
+            Err(err) => {
+                error!(
+                    transmission_id = %headers.transmission_id,
+                    error = %err,
+                    rejection_reason = "OAUTH_TOKEN_ACQUISITION_FAILED",
+                    "PayPal webhook verification failed: Unable to acquire OAuth access token for PayPal API"
+                );
+                return Err(err);
+            }
+        };
 
         // 4. Build verification request payload
         let verify_req = VerifyWebhookSignatureRequest {
@@ -116,6 +185,7 @@ impl WebhookVerifierService {
                 error!(
                     transmission_id = %headers.transmission_id,
                     error = %err,
+                    rejection_reason = "PAYPAL_VERIFY_NETWORK_ERROR",
                     "Network error during webhook signature verification"
                 );
                 AppError::HttpClient(err)
@@ -124,15 +194,17 @@ impl WebhookVerifierService {
         let status = resp.status();
         if !status.is_success() {
             let err_body = resp.text().await.unwrap_or_default();
+            let sanitized_err = sanitize_paypal_response(&err_body);
             error!(
                 status = %status,
                 transmission_id = %headers.transmission_id,
-                body = %err_body,
+                rejection_reason = "PAYPAL_VERIFY_API_HTTP_ERROR",
+                body = %sanitized_err,
                 "PayPal webhook signature verification API returned HTTP error"
             );
             return Err(AppError::PayPalApi(format!(
                 "PayPal webhook verification API error ({}): {}",
-                status, err_body
+                status, sanitized_err
             )));
         }
 
@@ -146,11 +218,19 @@ impl WebhookVerifierService {
             AppError::HttpClient(err)
         })?;
 
+        let sanitized_resp = sanitize_paypal_response(&body_text);
+        debug!(
+            transmission_id = %headers.transmission_id,
+            status = %status,
+            body = %sanitized_resp,
+            "Received PayPal webhook verification response"
+        );
+
         let verify_resp: VerifyWebhookSignatureResponse = serde_json::from_str(&body_text)
             .map_err(|err| {
                 error!(
                     transmission_id = %headers.transmission_id,
-                    body = %body_text,
+                    body = %sanitized_resp,
                     error = %err,
                     "Failed to deserialize PayPal webhook verification response"
                 );
@@ -158,5 +238,68 @@ impl WebhookVerifierService {
             })?;
 
         Ok(verify_resp.verification_status)
+    }
+}
+
+/// Sanitizes PayPal API response bodies for safe diagnostic logging.
+/// Redacts sensitive credential, token, and signature fields; truncates arbitrary text.
+pub fn sanitize_paypal_response(body: &str) -> String {
+    if let Ok(mut json_val) = serde_json::from_str::<serde_json::Value>(body) {
+        sanitize_json_value(&mut json_val);
+        serde_json::to_string(&json_val).unwrap_or_else(|_| "[REDACTED_JSON]".to_string())
+    } else {
+        let truncated: String = body.chars().take(300).collect();
+        truncated.replace('\n', " ").replace('\r', "")
+    }
+}
+
+fn sanitize_json_value(val: &mut serde_json::Value) {
+    match val {
+        serde_json::Value::Object(map) => {
+            for (k, v) in map.iter_mut() {
+                let lower = k.to_ascii_lowercase();
+                if lower.contains("token")
+                    || lower.contains("secret")
+                    || lower.contains("sig")
+                    || lower.contains("cert")
+                    || lower.contains("authorization")
+                    || lower.contains("password")
+                {
+                    *v = serde_json::json!("[REDACTED]");
+                } else {
+                    sanitize_json_value(v);
+                }
+            }
+        }
+        serde_json::Value::Array(arr) => {
+            for item in arr.iter_mut() {
+                sanitize_json_value(item);
+            }
+        }
+        _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_sanitize_paypal_response_redacts_sensitive_keys() {
+        let input = r#"{"verification_status":"FAILURE","access_token":"secret123","transmission_sig":"sig456","nested":{"client_secret":"shh","status":"error"}}"#;
+        let sanitized = sanitize_paypal_response(input);
+        assert!(!sanitized.contains("secret123"));
+        assert!(!sanitized.contains("sig456"));
+        assert!(!sanitized.contains("shh"));
+        assert!(sanitized.contains("[REDACTED]"));
+        assert!(sanitized.contains("FAILURE"));
+        assert!(sanitized.contains("error"));
+    }
+
+    #[test]
+    fn test_sanitize_paypal_response_plain_text() {
+        let plain = "Service Unavailable\nInternal Error";
+        let sanitized = sanitize_paypal_response(plain);
+        assert_eq!(sanitized, "Service Unavailable Internal Error");
     }
 }

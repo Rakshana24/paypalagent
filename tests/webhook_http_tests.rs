@@ -150,6 +150,17 @@ async fn setup_test_app(
     let webhook_persistence = Arc::new(WebhookPersistenceService::new(pool.clone()));
     let webhook_notify = Arc::new(tokio::sync::Notify::new());
 
+    let dispute_service = Arc::new(agentic_commerce::services::DisputeService::new(
+        pool.clone(),
+        verification_service.clone(),
+    ));
+    let dispute_evidence = Arc::new(agentic_commerce::services::DisputeEvidenceService::new(
+        pool.clone(),
+        dispute_service,
+        ledger_service.clone(),
+        verification_service.clone(),
+    ));
+
     let state = AppState {
         config,
         http_client,
@@ -162,6 +173,7 @@ async fn setup_test_app(
         webhook_verifier,
         webhook_persistence,
         webhook_notify: webhook_notify.clone(),
+        dispute_evidence,
     };
 
     let router = create_router(state);

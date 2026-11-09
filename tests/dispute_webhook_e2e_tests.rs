@@ -185,6 +185,13 @@ async fn setup_e2e_test_context(
         correlation_service.clone(),
     ));
 
+    let dispute_evidence = Arc::new(agentic_commerce::services::DisputeEvidenceService::new(
+        pool.clone(),
+        dispute_service.clone(),
+        ledger_service.clone(),
+        verification_service.clone(),
+    ));
+
     let state = AppState {
         config,
         http_client,
@@ -197,6 +204,7 @@ async fn setup_e2e_test_context(
         webhook_verifier,
         webhook_persistence: persistence_service.clone(),
         webhook_notify: Arc::new(tokio::sync::Notify::new()),
+        dispute_evidence,
     };
 
     let router = create_router(state);

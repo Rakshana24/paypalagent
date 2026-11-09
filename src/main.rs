@@ -7,9 +7,9 @@ use agentic_commerce::db::init_db;
 use agentic_commerce::http_client::{create_http_client, HttpClientConfig};
 use agentic_commerce::services::{
     BackgroundDisputeWorker, CancellationToken, CatalogService, DisputeConsumerService,
-    DisputeCorrelationService, DisputeService, LedgerService, PayPalAuthService,
-    PayPalOrdersService, ShoppingAgentService, VerificationService, WebhookPersistenceService,
-    WebhookVerifierService,
+    DisputeCorrelationService, DisputeEvidenceService, DisputeService, LedgerService,
+    PayPalAuthService, PayPalOrdersService, ShoppingAgentService, VerificationService,
+    WebhookPersistenceService, WebhookVerifierService,
 };
 use agentic_commerce::{create_router, AppState};
 
@@ -119,6 +119,13 @@ async fn main() {
         dispute_correlation.clone(),
     ));
 
+    let dispute_evidence = Arc::new(DisputeEvidenceService::new(
+        db_pool.clone(),
+        dispute_service.clone(),
+        ledger_service.clone(),
+        verification_service.clone(),
+    ));
+
     // Shared notification channel between HTTP ingress and background worker
     let webhook_notify = Arc::new(tokio::sync::Notify::new());
 
@@ -146,6 +153,7 @@ async fn main() {
         webhook_verifier,
         webhook_persistence,
         webhook_notify: webhook_notify.clone(),
+        dispute_evidence,
     };
 
     let app = create_router(state);

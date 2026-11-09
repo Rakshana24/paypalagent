@@ -521,3 +521,115 @@ async fn test_untrusted_cert_url_rejected_before_calling_paypal() {
     // PayPal API must not have been reached
     assert_eq!(mock_state.verify_request_count.load(Ordering::SeqCst), 0);
 }
+
+#[tokio::test]
+async fn test_verify_signature_with_raw_bytes_success() {
+    let (mock_url, mock_state) =
+        spawn_mock_paypal_server(StatusCode::OK, r#"{"verification_status":"SUCCESS"}"#).await;
+
+    let config = Arc::new(Config {
+        port: 5000,
+        rust_log: "info".to_string(),
+        paypal_base_url: mock_url,
+        database_url: "sqlite::memory:".to_string(),
+        paypal_client_id: "test-client-id".to_string(),
+        paypal_client_secret: "test-client-secret".to_string(),
+        paypal_webhook_id: Some("WH-CONFIGURED-ID-123".to_string()),
+    });
+
+    let client = create_http_client(&HttpClientConfig::default()).unwrap();
+    let auth_service = Arc::new(PayPalAuthService::new(config.clone(), client.clone()));
+    let verifier = WebhookVerifierService::new(config, client, auth_service);
+
+    let headers = valid_test_headers();
+    let raw_payload = br#"{"id":"WH-90812345","event_type":"CUSTOMER.DISPUTE.CREATED","resource_type":"dispute","resource":{"dispute_id":"PP-D-123"}}"#;
+    let event: serde_json::Value = serde_json::from_slice(raw_payload).unwrap();
+
+    let result = verifier
+        .verify_signature_with_raw(&headers, &event, Some(raw_payload))
+        .await;
+    assert!(
+        result.is_ok(),
+        "Verification with raw bytes must succeed with Ok(())"
+    );
+    assert_eq!(mock_state.verify_request_count.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn test_verify_signature_with_raw_bytes_failure_preserves_strict_rejection() {
+    let (mock_url, mock_state) =
+        spawn_mock_paypal_server(StatusCode::OK, r#"{"verification_status":"FAILURE"}"#).await;
+
+    let config = Arc::new(Config {
+        port: 5000,
+        rust_log: "info".to_string(),
+        paypal_base_url: mock_url,
+        database_url: "sqlite::memory:".to_string(),
+        paypal_client_id: "test-client-id".to_string(),
+        paypal_client_secret: "test-client-secret".to_string(),
+        paypal_webhook_id: Some("WH-CONFIGURED-ID-123".to_string()),
+    });
+
+    let client = create_http_client(&HttpClientConfig::default()).unwrap();
+    let auth_service = Arc::new(PayPalAuthService::new(config.clone(), client.clone()));
+    let verifier = WebhookVerifierService::new(config, client, auth_service);
+
+    let headers = valid_test_headers();
+    let raw_payload = br#"{"id":"WH-90812345","event_type":"CUSTOMER.DISPUTE.CREATED","resource_type":"dispute","resource":{"dispute_id":"PP-D-123"}}"#;
+    let event: serde_json::Value = serde_json::from_slice(raw_payload).unwrap();
+
+    let result = verifier
+        .verify_signature_with_raw(&headers, &event, Some(raw_payload))
+        .await;
+    assert!(
+        result.is_err(),
+        "Must return Err on FAILURE with raw bytes, preserving strict rejection"
+    );
+    match result.err().unwrap() {
+        AppError::WebhookVerificationFailed(msg) => {
+            assert!(msg.contains("FAILURE"));
+        }
+        other => panic!("Expected WebhookVerificationFailed, got {:?}", other),
+    }
+    assert_eq!(mock_state.verify_request_count.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn test_sanitized_paypal_http_error_redacts_tokens() {
+    let (mock_url, _) = spawn_mock_paypal_server(
+        StatusCode::BAD_REQUEST,
+        r#"{"error":"invalid_token","access_token":"secret_12345","message":"Bad request"}"#,
+    )
+    .await;
+
+    let config = Arc::new(Config {
+        port: 5000,
+        rust_log: "info".to_string(),
+        paypal_base_url: mock_url,
+        database_url: "sqlite::memory:".to_string(),
+        paypal_client_id: "test-client-id".to_string(),
+        paypal_client_secret: "test-client-secret".to_string(),
+        paypal_webhook_id: Some("WH-123".to_string()),
+    });
+
+    let client = create_http_client(&HttpClientConfig::default()).unwrap();
+    let auth_service = Arc::new(PayPalAuthService::new(config.clone(), client.clone()));
+    let verifier = WebhookVerifierService::new(config, client, auth_service);
+
+    let headers = valid_test_headers();
+    let event = sample_webhook_event_json();
+
+    let res = verifier.verify_signature(&headers, &event).await;
+    assert!(res.is_err());
+    match res.err().unwrap() {
+        AppError::PayPalApi(msg) => {
+            assert!(
+                !msg.contains("secret_12345"),
+                "Must redact secret token from error message"
+            );
+            assert!(msg.contains("[REDACTED]"));
+            assert!(msg.contains("400 Bad Request"));
+        }
+        other => panic!("Expected PayPalApi error, got {:?}", other),
+    }
+}

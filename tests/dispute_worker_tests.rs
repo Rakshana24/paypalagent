@@ -168,6 +168,13 @@ async fn setup_worker_test_context() -> WorkerTestContext {
         .with_poll_interval(Duration::from_millis(50))
         .with_lease_duration_secs(30);
 
+    let dispute_evidence = Arc::new(agentic_commerce::services::DisputeEvidenceService::new(
+        pool.clone(),
+        dispute_service.clone(),
+        ledger_service.clone(),
+        verification_service.clone(),
+    ));
+
     let state = AppState {
         config,
         http_client,
@@ -180,6 +187,7 @@ async fn setup_worker_test_context() -> WorkerTestContext {
         webhook_verifier,
         webhook_persistence: persistence_service.clone(),
         webhook_notify: webhook_notify.clone(),
+        dispute_evidence,
     };
 
     let router = create_router(state);

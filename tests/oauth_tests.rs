@@ -385,7 +385,17 @@ async fn test_auth_check_endpoint_integration() {
         auth_service.clone(),
     ));
     let webhook_persistence = Arc::new(agentic_commerce::services::WebhookPersistenceService::new(
+        db_pool.clone(),
+    ));
+    let dispute_service = Arc::new(agentic_commerce::services::DisputeService::new(
+        db_pool.clone(),
+        verification_service.clone(),
+    ));
+    let dispute_evidence = Arc::new(agentic_commerce::services::DisputeEvidenceService::new(
         db_pool,
+        dispute_service,
+        ledger_service.clone(),
+        verification_service.clone(),
     ));
 
     let state = AppState {
@@ -400,6 +410,7 @@ async fn test_auth_check_endpoint_integration() {
         webhook_verifier,
         webhook_persistence,
         webhook_notify: std::sync::Arc::new(tokio::sync::Notify::new()),
+        dispute_evidence,
     };
 
     let router = create_router(state);

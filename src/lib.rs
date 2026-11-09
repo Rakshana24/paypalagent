@@ -25,8 +25,8 @@ use models::{
     ShoppingRequest, ShoppingSessionDetail, ShoppingSessionResponse, VerificationResult,
 };
 use services::{
-    CatalogService, LedgerService, PayPalAuthService, PayPalOrdersService, ShoppingAgentService,
-    VerificationService, WebhookPersistenceService, WebhookVerifierService,
+    CatalogService, DisputeEvidenceService, LedgerService, PayPalAuthService, PayPalOrdersService,
+    ShoppingAgentService, VerificationService, WebhookPersistenceService, WebhookVerifierService,
 };
 
 /// Shared application state across HTTP handlers.
@@ -43,6 +43,7 @@ pub struct AppState {
     pub webhook_verifier: Arc<WebhookVerifierService>,
     pub webhook_persistence: Arc<WebhookPersistenceService>,
     pub webhook_notify: Arc<tokio::sync::Notify>,
+    pub dispute_evidence: Arc<DisputeEvidenceService>,
 }
 
 /// GET /health handler returning operational status.
@@ -221,10 +222,10 @@ pub async fn paypal_webhook_handler(
     let event_json: serde_json::Value = serde_json::from_slice(&body_bytes)
         .map_err(|e| AppError::InvalidPayload(format!("Malformed webhook JSON payload: {}", e)))?;
 
-    // 4. Verify signature using existing WebhookVerifierService and configured PAYPAL_WEBHOOK_ID
+    // 4. Verify signature using existing WebhookVerifierService and configured PAYPAL_WEBHOOK_ID (preserving raw bytes for diagnostic verification)
     state
         .webhook_verifier
-        .verify_signature(&webhook_headers, &event_json)
+        .verify_signature_with_raw(&webhook_headers, &event_json, Some(&body_bytes))
         .await?;
 
     // 5. Persist the exact original raw bytes using WebhookPersistenceService
@@ -274,6 +275,37 @@ pub async fn paypal_webhook_handler(
     }
 }
 
+/// GET /api/disputes/:dispute_id/evidence handler to generate and retrieve structured evidence brief JSON.
+pub async fn get_dispute_evidence(
+    State(state): State<AppState>,
+    Path(dispute_id): Path<String>,
+) -> Result<Json<crate::models::evidence::DisputeEvidenceBrief>, AppError> {
+    let brief = state
+        .dispute_evidence
+        .generate_evidence_brief(&dispute_id)
+        .await?;
+    Ok(Json(brief))
+}
+
+/// GET /api/disputes/:dispute_id/evidence/markdown handler to generate and retrieve human-readable Markdown evidence brief.
+pub async fn get_dispute_evidence_markdown(
+    State(state): State<AppState>,
+    Path(dispute_id): Path<String>,
+) -> Result<([(axum::http::HeaderName, &'static str); 1], String), AppError> {
+    let brief = state
+        .dispute_evidence
+        .generate_evidence_brief(&dispute_id)
+        .await?;
+    let markdown = brief.to_markdown();
+    Ok((
+        [(
+            axum::http::header::CONTENT_TYPE,
+            "text/markdown; charset=utf-8",
+        )],
+        markdown,
+    ))
+}
+
 /// Builds the Axum application router with shared state.
 pub fn create_router(state: AppState) -> Router {
     Router::new()
@@ -318,6 +350,15 @@ pub fn create_router(state: AppState) -> Router {
         .route(
             "/api/webhooks/paypal",
             post(paypal_webhook_handler).layer(DefaultBodyLimit::max(MAX_WEBHOOK_PAYLOAD_SIZE)),
+        )
+        // Phase 5 Dispute Evidence Routes
+        .route(
+            "/api/disputes/:dispute_id/evidence",
+            get(get_dispute_evidence),
+        )
+        .route(
+            "/api/disputes/:dispute_id/evidence/markdown",
+            get(get_dispute_evidence_markdown),
         )
         .with_state(state)
 }
