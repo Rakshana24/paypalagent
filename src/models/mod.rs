@@ -1,6 +1,8 @@
 pub mod authorization;
 pub mod catalog;
 pub mod config;
+pub mod correlation;
+pub mod dispute;
 pub mod error;
 pub mod health;
 pub mod ledger;
@@ -12,6 +14,8 @@ pub mod webhook;
 pub use authorization::*;
 pub use catalog::*;
 pub use config::*;
+pub use correlation::*;
+pub use dispute::*;
 pub use error::*;
 pub use health::*;
 pub use ledger::*;

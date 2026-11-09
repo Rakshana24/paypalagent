@@ -7,7 +7,7 @@ use agentic_commerce::db::init_db;
 use agentic_commerce::http_client::{create_http_client, HttpClientConfig};
 use agentic_commerce::services::{
     CatalogService, LedgerService, PayPalAuthService, PayPalOrdersService, ShoppingAgentService,
-    VerificationService,
+    VerificationService, WebhookPersistenceService, WebhookVerifierService,
 };
 use agentic_commerce::{create_router, AppState};
 
@@ -62,6 +62,12 @@ async fn main() {
         auth_service.clone(),
         ledger_service.clone(),
     ));
+    let webhook_verifier = Arc::new(WebhookVerifierService::new(
+        config_arc.clone(),
+        http_client.clone(),
+        auth_service.clone(),
+    ));
+    let webhook_persistence = Arc::new(WebhookPersistenceService::new(db_pool.clone()));
 
     let state = AppState {
         config: config_arc,
@@ -72,6 +78,8 @@ async fn main() {
         catalog_service,
         shopping_agent,
         paypal_orders,
+        webhook_verifier,
+        webhook_persistence,
     };
 
     let app = create_router(state);

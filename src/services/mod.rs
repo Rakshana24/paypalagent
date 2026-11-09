@@ -1,5 +1,8 @@
 pub mod auth;
 pub mod catalog;
+pub mod dispute_consumer;
+pub mod dispute_correlation;
+pub mod dispute_service;
 pub mod ledger;
 pub mod paypal_orders;
 pub mod requirement_extractor;
@@ -10,6 +13,9 @@ pub mod webhook_verifier;
 
 pub use auth::*;
 pub use catalog::*;
+pub use dispute_consumer::*;
+pub use dispute_correlation::*;
+pub use dispute_service::*;
 pub use ledger::*;
 pub use paypal_orders::*;
 pub use requirement_extractor::*;

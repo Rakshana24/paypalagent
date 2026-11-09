@@ -53,6 +53,14 @@ async fn setup_test_app() -> (axum::Router, sqlx::SqlitePool) {
         auth_service.clone(),
         ledger_service.clone(),
     ));
+    let webhook_verifier = Arc::new(agentic_commerce::services::WebhookVerifierService::new(
+        config.clone(),
+        http_client.clone(),
+        auth_service.clone(),
+    ));
+    let webhook_persistence = Arc::new(agentic_commerce::services::WebhookPersistenceService::new(
+        pool.clone(),
+    ));
 
     let state = AppState {
         config,
@@ -63,6 +71,8 @@ async fn setup_test_app() -> (axum::Router, sqlx::SqlitePool) {
         catalog_service,
         shopping_agent,
         paypal_orders,
+        webhook_verifier,
+        webhook_persistence,
     };
 
     let router = agentic_commerce::create_router(state);

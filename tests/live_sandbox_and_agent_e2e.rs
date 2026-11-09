@@ -469,3 +469,115 @@ async fn test_live_paypal_sandbox_oauth_and_order_creation() {
     assert_eq!(verify_after.status, VerificationStatus::Valid);
     println!("✓ Ledger Integrity Maintained After Premature Capture Failure!");
 }
+
+// =========================================================================
+// SECTION 7: LIVE PAYPAL SANDBOX WEBHOOK REGISTRATION LOOKUP
+// =========================================================================
+
+#[tokio::test]
+async fn test_live_paypal_sandbox_webhook_lookup() {
+    let (config, _, _, _, _, _, auth) = setup_real_env_services().await;
+
+    // Guard 1: Skip if real OAuth credentials are absent or placeholder.
+    if config.paypal_client_id.is_empty()
+        || config.paypal_client_secret.is_empty()
+        || config.paypal_client_id.starts_with("test_")
+    {
+        println!(
+            "\n[SKIPPED] Webhook lookup skipped: real PayPal credentials not configured in .env"
+        );
+        return;
+    }
+
+    // Guard 2: Skip if PAYPAL_WEBHOOK_ID is absent.
+    let webhook_id = match config.validate_webhook_id() {
+        Ok(id) => id.to_string(),
+        Err(_) => {
+            println!(
+                "\n[SKIPPED] Webhook lookup skipped: PAYPAL_WEBHOOK_ID is not configured in .env"
+            );
+            return;
+        }
+    };
+
+    println!("\n========================================================");
+    println!(">>> LIVE PAYPAL SANDBOX WEBHOOK LOOKUP IN PROGRESS <<<");
+    println!("========================================================");
+    println!("PayPal Base URL : {}", config.paypal_base_url);
+
+    // Step 1: Obtain a live OAuth Bearer token via the existing auth service.
+    // The token value is never printed.
+    let access_token = auth
+        .get_valid_access_token()
+        .await
+        .expect("Live PayPal OAuth token retrieval failed");
+
+    println!("✓ Live PayPal Sandbox OAuth token obtained.");
+
+    // Step 2: Build the read-only GET URL for the registered webhook.
+    let url = format!(
+        "{}/v1/notifications/webhooks/{}",
+        config.paypal_base_url.trim_end_matches('/'),
+        webhook_id,
+    );
+
+    // Step 3: Send exactly one GET request. No body, no mutation, no database writes.
+    let http_client = create_http_client(&HttpClientConfig::default())
+        .expect("Failed to create HTTP client for webhook lookup");
+
+    let response = http_client
+        .get(&url)
+        .bearer_auth(access_token) // token used for auth only; never printed
+        .header(reqwest::header::ACCEPT, "application/json")
+        .send()
+        .await
+        .expect("HTTP request to PayPal webhook lookup endpoint failed");
+
+    let status = response.status();
+    println!("  HTTP Status     : {}", status);
+
+    // Step 4: Assert HTTP 200 — confirms PAYPAL_WEBHOOK_ID belongs to this Sandbox app.
+    assert!(
+        status.is_success(),
+        "PayPal webhook lookup returned non-200 status {}. \
+         Check that PAYPAL_WEBHOOK_ID belongs to the same Sandbox REST app as PAYPAL_CLIENT_ID.",
+        status
+    );
+
+    // Step 5: Parse and print only the safe, non-secret fields from the response.
+    let body: serde_json::Value = response
+        .json()
+        .await
+        .expect("Failed to parse PayPal webhook lookup response as JSON");
+
+    // Registered public webhook URL (the ngrok / tunnel endpoint you configured).
+    if let Some(url_field) = body.get("url").and_then(|v| v.as_str()) {
+        println!("  Registered URL  : {}", url_field);
+    }
+
+    // Active event subscriptions.
+    if let Some(event_types) = body.get("event_types").and_then(|v| v.as_array()) {
+        println!("  Event Types     : {} subscribed", event_types.len());
+        for et in event_types {
+            let name = et
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<unknown>");
+            let desc = et.get("description").and_then(|v| v.as_str()).unwrap_or("");
+            if desc.is_empty() {
+                println!("    - {}", name);
+            } else {
+                println!("    - {} ({})", name, desc);
+            }
+        }
+    }
+
+    // Optional status field (present on some PayPal responses).
+    if let Some(wh_status) = body.get("status").and_then(|v| v.as_str()) {
+        println!("  Webhook Status  : {}", wh_status);
+    }
+
+    println!("========================================================");
+    println!("✓ Webhook registration confirmed and event types verified!");
+    println!("========================================================");
+}

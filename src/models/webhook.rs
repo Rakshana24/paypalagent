@@ -410,6 +410,9 @@ pub struct WebhookEventRecord {
     pub next_retry_at: Option<String>,
     pub created_at: String,
     pub processed_at: Option<String>,
+    pub processing_started_at: Option<String>,
+    pub lease_token: Option<String>,
+    pub processing_worker_id: Option<String>,
 }
 
 impl std::fmt::Debug for WebhookEventRecord {
@@ -432,6 +435,9 @@ impl std::fmt::Debug for WebhookEventRecord {
             .field("next_retry_at", &self.next_retry_at)
             .field("created_at", &self.created_at)
             .field("processed_at", &self.processed_at)
+            .field("processing_started_at", &self.processing_started_at)
+            .field("lease_token", &self.lease_token)
+            .field("processing_worker_id", &self.processing_worker_id)
             .finish()
     }
 }
@@ -811,6 +817,9 @@ mod tests {
             next_retry_at: None,
             created_at: "2026-11-07T12:00:00Z".to_string(),
             processed_at: None,
+            processing_started_at: None,
+            lease_token: None,
+            processing_worker_id: None,
         };
 
         let debug_str = format!("{:?}", record);

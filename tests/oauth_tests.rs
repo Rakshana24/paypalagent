@@ -365,7 +365,7 @@ async fn test_auth_check_endpoint_integration() {
         db_pool.clone(),
     ));
     let verification_service = Arc::new(agentic_commerce::services::VerificationService::new(
-        db_pool,
+        db_pool.clone(),
     ));
     let catalog_service = agentic_commerce::services::CatalogService::new();
     let shopping_agent = Arc::new(agentic_commerce::services::ShoppingAgentService::new(
@@ -379,6 +379,14 @@ async fn test_auth_check_endpoint_integration() {
         auth_service.clone(),
         ledger_service.clone(),
     ));
+    let webhook_verifier = Arc::new(agentic_commerce::services::WebhookVerifierService::new(
+        config.clone(),
+        http_client.clone(),
+        auth_service.clone(),
+    ));
+    let webhook_persistence = Arc::new(agentic_commerce::services::WebhookPersistenceService::new(
+        db_pool,
+    ));
 
     let state = AppState {
         config: config.clone(),
@@ -389,6 +397,8 @@ async fn test_auth_check_endpoint_integration() {
         catalog_service,
         shopping_agent,
         paypal_orders,
+        webhook_verifier,
+        webhook_persistence,
     };
 
     let router = create_router(state);

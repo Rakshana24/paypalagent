@@ -123,9 +123,11 @@ async fn test_duplicate_event_does_not_overwrite_original_payload() {
     let tampered_payload = b"{\"attacker\":\"payload_tampered\"}".to_vec();
     let res2 = service
         .persist_event(&event, "trans-id-300-tampered", &tampered_payload)
-        .await
-        .unwrap();
-    assert!(res2.is_duplicate());
+        .await;
+    assert!(
+        matches!(res2, Err(AppError::PayloadHashMismatch(_))),
+        "Milestone 4.4 requires payload divergence detection on duplicate event ID"
+    );
 
     // Verify database record still contains the original untampered payload
     let record = service
@@ -507,4 +509,436 @@ async fn test_concurrent_duplicate_insertion() {
 
     assert_eq!(record.event_id, "WH-EVT-CONCURRENT");
     assert_eq!(record.retry_count, 0);
+}
+
+#[tokio::test]
+async fn test_duplicate_event_payload_divergence_detected() {
+    let (_pool, service) = setup_test_db().await;
+    let (event, raw_payload) = create_sample_webhook_event("WH-EVT-DIVERGE", "PP-D-1");
+
+    // 1. First arrival succeeds
+    let res1 = service
+        .persist_event(&event, "trans-1", &raw_payload)
+        .await
+        .unwrap();
+    assert!(res1.is_inserted());
+
+    // 2. Second arrival with SAME event ID but DIFFERENT raw payload
+    let different_payload = json!({
+        "id": "WH-EVT-DIVERGE",
+        "create_time": "2026-11-07T14:44:47Z",
+        "resource_type": "dispute",
+        "event_type": "CUSTOMER.DISPUTE.CREATED",
+        "summary": "Tampered duplicate payload with different amount",
+        "resource": {
+            "dispute_id": "PP-D-1",
+            "status": "WAITING_FOR_SELLER_RESPONSE",
+            "dispute_amount": {
+                "currency_code": "USD",
+                "value": "9999.99"
+            }
+        }
+    });
+    let different_bytes = serde_json::to_vec_pretty(&different_payload).unwrap();
+    let different_event: PayPalWebhookEvent = serde_json::from_slice(&different_bytes).unwrap();
+
+    let res2 = service
+        .persist_event(&different_event, "trans-2", &different_bytes)
+        .await;
+
+    assert!(
+        matches!(res2, Err(AppError::PayloadHashMismatch(_))),
+        "Must reject duplicate event ID with divergent payload SHA-256"
+    );
+
+    // 3. Stored payload and metadata remain original
+    let stored = service
+        .get_event_by_id("WH-EVT-DIVERGE")
+        .await
+        .unwrap()
+        .expect("Original record must remain intact");
+    assert_eq!(stored.raw_payload, raw_payload);
+    assert_eq!(stored.payload_hash, compute_payload_hash(&raw_payload));
+}
+
+#[tokio::test]
+async fn test_acquire_lease_claims_pending_event() {
+    let (_pool, service) = setup_test_db().await;
+    let (event, raw_payload) = create_sample_webhook_event("WH-EVT-LEASE-1", "PP-D-LEASE-1");
+
+    service
+        .persist_event(&event, "trans-1", &raw_payload)
+        .await
+        .unwrap();
+
+    // Worker 1 acquires lease
+    let claim1 = service.acquire_lease("worker-alpha", 300).await.unwrap();
+    assert!(claim1.is_some());
+    let rec1 = claim1.unwrap();
+    assert_eq!(rec1.event_id, "WH-EVT-LEASE-1");
+    assert_eq!(rec1.processing_status, WebhookProcessingStatus::Processing);
+    assert_eq!(rec1.processing_worker_id.as_deref(), Some("worker-alpha"));
+    assert!(rec1.lease_token.is_some());
+    assert!(rec1.processing_started_at.is_some());
+
+    // Worker 2 attempts lease on empty candidate queue
+    let claim2 = service.acquire_lease("worker-beta", 300).await.unwrap();
+    assert!(claim2.is_none(), "No additional events available for lease");
+}
+
+#[tokio::test]
+async fn test_mark_processed_fenced_tx_commits_atomically() {
+    let (pool, service) = setup_test_db().await;
+    let (event, raw_payload) = create_sample_webhook_event("WH-EVT-FENCED-PROC", "PP-D-FPROC");
+
+    service
+        .persist_event(&event, "trans-1", &raw_payload)
+        .await
+        .unwrap();
+
+    let record = service
+        .acquire_lease("worker-1", 300)
+        .await
+        .unwrap()
+        .unwrap();
+    let lease_token = record.lease_token.unwrap();
+
+    // Execute fenced mark_processed within a transaction
+    let mut tx = pool.begin().await.unwrap();
+    let processed_record = service
+        .mark_processed_fenced_tx(&mut tx, &record.event_id, &lease_token)
+        .await
+        .expect("Fenced processing commit must succeed");
+    assert_eq!(
+        processed_record.processing_status,
+        WebhookProcessingStatus::Processed
+    );
+    assert!(processed_record.processed_at.is_some());
+    assert_eq!(processed_record.lease_token, None);
+
+    tx.commit().await.unwrap();
+
+    // Verify persisted record in DB
+    let reloaded = service
+        .get_event_by_id(&record.event_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        reloaded.processing_status,
+        WebhookProcessingStatus::Processed
+    );
+}
+
+#[tokio::test]
+async fn test_stale_worker_fencing_blocks_commit_after_lease_reclaimed() {
+    let (pool, service) = setup_test_db().await;
+    let (event, raw_payload) = create_sample_webhook_event("WH-EVT-STALE", "PP-D-STALE");
+
+    service
+        .persist_event(&event, "trans-1", &raw_payload)
+        .await
+        .unwrap();
+
+    // 1. Worker 1 claims lease
+    let claim1 = service
+        .acquire_lease("worker-1", 300)
+        .await
+        .unwrap()
+        .unwrap();
+    let token_1 = claim1.lease_token.unwrap();
+
+    // 2. Simulate expiration: worker 1 hangs, time advances past 300 seconds
+    let past_time = (chrono::Utc::now() - chrono::Duration::seconds(305)).to_rfc3339();
+    sqlx::query(
+        "UPDATE webhook_events SET processing_started_at = ? WHERE event_id = 'WH-EVT-STALE';",
+    )
+    .bind(&past_time)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // 3. Worker 2 reclaims the abandoned event
+    let claim2 = service
+        .acquire_lease("worker-2", 300)
+        .await
+        .unwrap()
+        .unwrap();
+    let token_2 = claim2.lease_token.unwrap();
+    assert_ne!(token_1, token_2, "Worker 2 gets a fresh fencing token");
+    assert_eq!(claim2.processing_worker_id.as_deref(), Some("worker-2"));
+
+    // 4. Stale Worker 1 wakes up and attempts to commit using token_1
+    let mut tx = pool.begin().await.unwrap();
+    let commit_res = service
+        .mark_processed_fenced_tx(&mut tx, "WH-EVT-STALE", &token_1)
+        .await;
+
+    assert!(
+        matches!(commit_res, Err(AppError::DisputeLeaseFencedOut(_))),
+        "Stale worker 1 must be rejected by lease fencing"
+    );
+    tx.rollback().await.unwrap();
+
+    // 5. Database record remains owned by Worker 2
+    let current = service
+        .get_event_by_id("WH-EVT-STALE")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        current.processing_status,
+        WebhookProcessingStatus::Processing
+    );
+    assert_eq!(current.lease_token.as_deref(), Some(token_2.as_str()));
+    assert_eq!(current.processing_worker_id.as_deref(), Some("worker-2"));
+
+    // 6. Active Worker 2 commits successfully
+    let mut tx2 = pool.begin().await.unwrap();
+    let proc2_res = service
+        .mark_processed_fenced_tx(&mut tx2, "WH-EVT-STALE", &token_2)
+        .await;
+    assert!(
+        proc2_res.is_ok(),
+        "Active worker 2 must commit successfully"
+    );
+    tx2.commit().await.unwrap();
+
+    let final_rec = service
+        .get_event_by_id("WH-EVT-STALE")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        final_rec.processing_status,
+        WebhookProcessingStatus::Processed
+    );
+}
+
+#[tokio::test]
+async fn test_abandoned_processing_event_recovery() {
+    let (pool, service) = setup_test_db().await;
+    let (event, raw_payload) = create_sample_webhook_event("WH-EVT-ABANDONED", "PP-D-ABANDONED");
+
+    service
+        .persist_event(&event, "trans-1", &raw_payload)
+        .await
+        .unwrap();
+
+    // Set to PROCESSING with timestamp 400 seconds ago
+    let old_time = (chrono::Utc::now() - chrono::Duration::seconds(400)).to_rfc3339();
+    sqlx::query(
+        r#"
+        UPDATE webhook_events
+        SET processing_status = 'PROCESSING',
+            processing_started_at = ?,
+            lease_token = 'old-token',
+            processing_worker_id = 'crashed-worker'
+        WHERE event_id = 'WH-EVT-ABANDONED';
+        "#,
+    )
+    .bind(&old_time)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // Worker reclaims abandoned event
+    let claim = service.acquire_lease("recovery-worker", 300).await.unwrap();
+    assert!(claim.is_some());
+    let rec = claim.unwrap();
+    assert_eq!(rec.event_id, "WH-EVT-ABANDONED");
+    assert_eq!(rec.processing_worker_id.as_deref(), Some("recovery-worker"));
+    assert_ne!(rec.lease_token.as_deref(), Some("old-token"));
+}
+
+#[tokio::test]
+async fn test_schedule_retry_fenced_and_backoff() {
+    let (_pool, service) = setup_test_db().await;
+    let (event, raw_payload) = create_sample_webhook_event("WH-EVT-FENCED-RETRY", "PP-D-RETRY");
+
+    service
+        .persist_event(&event, "trans-1", &raw_payload)
+        .await
+        .unwrap();
+
+    let claimed = service
+        .acquire_lease("worker-1", 300)
+        .await
+        .unwrap()
+        .unwrap();
+    let token = claimed.lease_token.unwrap();
+
+    let retried = service
+        .schedule_retry_fenced(&claimed.event_id, &token, "Transient PayPal timeout")
+        .await
+        .unwrap();
+
+    assert_eq!(retried.processing_status, WebhookProcessingStatus::Retry);
+    assert_eq!(retried.retry_count, 1);
+    assert!(retried.next_retry_at.is_some());
+    assert_eq!(retried.lease_token, None);
+    assert_eq!(retried.processing_started_at, None);
+    assert_eq!(retried.processing_worker_id, None);
+}
+
+#[tokio::test]
+async fn test_mark_failed_fenced_terminal() {
+    let (_pool, service) = setup_test_db().await;
+    let (event, raw_payload) = create_sample_webhook_event("WH-EVT-FENCED-FAIL", "PP-D-FAIL");
+
+    service
+        .persist_event(&event, "trans-1", &raw_payload)
+        .await
+        .unwrap();
+
+    let claimed = service
+        .acquire_lease("worker-1", 300)
+        .await
+        .unwrap()
+        .unwrap();
+    let token = claimed.lease_token.unwrap();
+
+    let failed = service
+        .mark_failed_fenced(&claimed.event_id, &token, "Fatal malformed resource")
+        .await
+        .unwrap();
+
+    assert_eq!(failed.processing_status, WebhookProcessingStatus::Failed);
+    assert!(failed.processed_at.is_some());
+    assert_eq!(failed.lease_token, None);
+}
+
+#[tokio::test]
+async fn test_shared_transaction_atomicity_with_dispute_and_webhook_persistence() {
+    let (pool, service) = setup_test_db().await;
+    let (event, raw_payload) = create_sample_webhook_event("WH-EVT-SHARED-TX", "PP-D-SHARED");
+
+    service
+        .persist_event(&event, "trans-1", &raw_payload)
+        .await
+        .unwrap();
+
+    let claimed = service
+        .acquire_lease("worker-shared", 300)
+        .await
+        .unwrap()
+        .unwrap();
+    let lease_token = claimed.lease_token.unwrap();
+
+    // 1. Success case: dispute insertion + audit step + mark_processed_fenced_tx commit together
+    let mut tx = pool.begin().await.unwrap();
+
+    // Insert dispute mutation on tx
+    sqlx::query(
+        r#"
+        INSERT INTO disputes (
+            dispute_id, genesis_anchor_type, genesis_anchor_hash,
+            status, correlation_status, created_at, updated_at
+        ) VALUES (
+            'PP-D-SHARED', 'GENESIS_HASH', '0000000000000000000000000000000000000000000000000000000000000000',
+            'UNDER_REVIEW', 'NOT_FOUND', '2026-11-08T00:00:00Z', '2026-11-08T00:00:00Z'
+        );
+        "#
+    )
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+
+    // Insert dispute audit step on tx
+    sqlx::query(
+        r#"
+        INSERT INTO dispute_audit_steps (
+            id, dispute_id, sequence_index, action_type, payload,
+            previous_hash, current_hash, created_at
+        ) VALUES (
+            'step-shared-1', 'PP-D-SHARED', 0, 'DISPUTE_IMPORTED', '{}',
+            '0000000000000000000000000000000000000000000000000000000000000000', 'step-hash-shared', '2026-11-08T00:00:00Z'
+        );
+        "#
+    )
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+
+    // Mark event processed on the SAME tx
+    service
+        .mark_processed_fenced_tx(&mut tx, "WH-EVT-SHARED-TX", &lease_token)
+        .await
+        .unwrap();
+
+    tx.commit().await.unwrap();
+
+    // Verify all 3 mutations committed atomically
+    let disp_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM disputes WHERE dispute_id = 'PP-D-SHARED';")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(disp_count, 1);
+
+    let step_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM dispute_audit_steps WHERE dispute_id = 'PP-D-SHARED';",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(step_count, 1);
+
+    let event_record = service
+        .get_event_by_id("WH-EVT-SHARED-TX")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        event_record.processing_status,
+        WebhookProcessingStatus::Processed
+    );
+
+    // 2. Failure case: if fencing fails on mark_processed_fenced_tx, dispute mutations rollback
+    let (event_fail, raw_fail) = create_sample_webhook_event("WH-EVT-SHARED-FAIL", "PP-D-FAIL-TX");
+    service
+        .persist_event(&event_fail, "trans-fail", &raw_fail)
+        .await
+        .unwrap();
+    let _claimed_fail = service
+        .acquire_lease("worker-fail", 300)
+        .await
+        .unwrap()
+        .unwrap();
+
+    let mut tx_fail = pool.begin().await.unwrap();
+
+    sqlx::query(
+        r#"
+        INSERT INTO disputes (
+            dispute_id, genesis_anchor_type, genesis_anchor_hash,
+            status, correlation_status, created_at, updated_at
+        ) VALUES (
+            'PP-D-FAIL-TX', 'GENESIS_HASH', '0000000000000000000000000000000000000000000000000000000000000000',
+            'UNDER_REVIEW', 'NOT_FOUND', '2026-11-08T00:00:00Z', '2026-11-08T00:00:00Z'
+        );
+        "#
+    )
+    .execute(&mut *tx_fail)
+    .await
+    .unwrap();
+
+    // Call mark_processed_fenced_tx with wrong/invalid lease token
+    let fence_err = service
+        .mark_processed_fenced_tx(&mut tx_fail, "WH-EVT-SHARED-FAIL", "invalid-stale-token")
+        .await;
+    assert!(matches!(fence_err, Err(AppError::DisputeLeaseFencedOut(_))));
+
+    tx_fail.rollback().await.unwrap();
+
+    // Verify dispute row was NOT committed (rolled back)
+    let rolled_back_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM disputes WHERE dispute_id = 'PP-D-FAIL-TX';")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        rolled_back_count, 0,
+        "Dispute mutation must be rolled back on fencing failure"
+    );
 }

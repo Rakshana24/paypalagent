@@ -1,6 +1,7 @@
 use axum::{
-    extract::{Path, State},
-    http::StatusCode,
+    body::Bytes,
+    extract::{DefaultBodyLimit, Path, State},
+    http::{HeaderMap, StatusCode},
     routing::{get, post},
     Json, Router,
 };
@@ -16,6 +17,7 @@ pub mod services;
 
 use config::Config;
 use error::AppError;
+use models::webhook::{PayPalWebhookEvent, PayPalWebhookHeaders, WebhookPersistenceResult};
 use models::{
     AppendEventRequest, AppendEventResponse, AuthCheckResponse, AuthorizePurchaseRequest,
     AuthorizePurchaseResponse, CaptureOrderResponse, CreateOrderResponse, CreateSessionRequest,
@@ -24,7 +26,7 @@ use models::{
 };
 use services::{
     CatalogService, LedgerService, PayPalAuthService, PayPalOrdersService, ShoppingAgentService,
-    VerificationService,
+    VerificationService, WebhookPersistenceService, WebhookVerifierService,
 };
 
 /// Shared application state across HTTP handlers.
@@ -38,6 +40,8 @@ pub struct AppState {
     pub catalog_service: CatalogService,
     pub shopping_agent: Arc<ShoppingAgentService>,
     pub paypal_orders: Arc<PayPalOrdersService>,
+    pub webhook_verifier: Arc<WebhookVerifierService>,
+    pub webhook_persistence: Arc<WebhookPersistenceService>,
 }
 
 /// GET /health handler returning operational status.
@@ -185,6 +189,87 @@ pub async fn checkout_cancel_handler() -> axum::response::Html<&'static str> {
     axum::response::Html("<html><body><h2>PayPal Sandbox Approval Cancelled</h2><p>The transaction was cancelled by the buyer.</p></body></html>")
 }
 
+/// Maximum allowable request body size for PayPal webhooks (256 KB).
+pub const MAX_WEBHOOK_PAYLOAD_SIZE: usize = 256 * 1024;
+
+/// POST /api/webhooks/paypal handler to ingest, verify, and durably persist PayPal webhooks.
+pub async fn paypal_webhook_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body_bytes: Bytes,
+) -> Result<(StatusCode, Json<serde_json::Value>), AppError> {
+    // 1. Enforce payload size limit
+    if body_bytes.len() > MAX_WEBHOOK_PAYLOAD_SIZE {
+        return Err(AppError::InvalidPayload(format!(
+            "Webhook request payload exceeds maximum allowed size of {} bytes",
+            MAX_WEBHOOK_PAYLOAD_SIZE
+        )));
+    }
+
+    if body_bytes.is_empty() {
+        return Err(AppError::InvalidPayload("Empty request body".to_string()));
+    }
+
+    // 2. Extract PayPal transmission headers case-insensitively
+    let webhook_headers = PayPalWebhookHeaders::from_header_map(&headers)?;
+
+    // 3. Parse JSON from preserved raw bytes into PayPalWebhookEvent and serde_json::Value
+    let event: PayPalWebhookEvent = serde_json::from_slice(&body_bytes)
+        .map_err(|e| AppError::InvalidPayload(format!("Malformed webhook JSON payload: {}", e)))?;
+
+    let event_json: serde_json::Value = serde_json::from_slice(&body_bytes)
+        .map_err(|e| AppError::InvalidPayload(format!("Malformed webhook JSON payload: {}", e)))?;
+
+    // 4. Verify signature using existing WebhookVerifierService and configured PAYPAL_WEBHOOK_ID
+    state
+        .webhook_verifier
+        .verify_signature(&webhook_headers, &event_json)
+        .await?;
+
+    // 5. Persist the exact original raw bytes using WebhookPersistenceService
+    let persistence_result = state
+        .webhook_persistence
+        .persist_event(&event, &webhook_headers.transmission_id, &body_bytes)
+        .await?;
+
+    // 6. Return appropriate success acknowledgement based on idempotency outcome
+    match persistence_result {
+        WebhookPersistenceResult::Inserted(record) => {
+            tracing::info!(
+                event_id = %record.event_id,
+                event_type = %record.event_type,
+                transmission_id = %webhook_headers.transmission_id,
+                "PayPal webhook event accepted and persisted"
+            );
+            Ok((
+                StatusCode::ACCEPTED,
+                Json(serde_json::json!({
+                    "success": true,
+                    "status": "ACCEPTED",
+                    "event_id": record.event_id,
+                    "message": "Webhook event accepted and persisted"
+                })),
+            ))
+        }
+        WebhookPersistenceResult::Duplicate { event_id } => {
+            tracing::info!(
+                event_id = %event_id,
+                transmission_id = %webhook_headers.transmission_id,
+                "Duplicate PayPal webhook event acknowledged idempotently"
+            );
+            Ok((
+                StatusCode::OK,
+                Json(serde_json::json!({
+                    "success": true,
+                    "status": "DUPLICATE",
+                    "event_id": event_id,
+                    "message": "Duplicate webhook event acknowledged idempotently"
+                })),
+            ))
+        }
+    }
+}
+
 /// Builds the Axum application router with shared state.
 pub fn create_router(state: AppState) -> Router {
     Router::new()
@@ -224,6 +309,11 @@ pub fn create_router(state: AppState) -> Router {
         .route(
             "/api/shopping/checkout/cancel",
             get(checkout_cancel_handler),
+        )
+        // Phase 4 Webhook Route
+        .route(
+            "/api/webhooks/paypal",
+            post(paypal_webhook_handler).layer(DefaultBodyLimit::max(MAX_WEBHOOK_PAYLOAD_SIZE)),
         )
         .with_state(state)
 }

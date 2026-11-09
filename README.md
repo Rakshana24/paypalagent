@@ -1,362 +1,309 @@
-# AgenticCommerce: AI Shopping Agent & Verifiable Cryptographic Ledger
+# AgentAudit: AI Commerce Shopping Agent & Verifiable Cryptographic Ledger
 
-**AgentAudit** backend implementation for the PayPal AI Hackathon:
-1. **Phase 1**: PayPal Sandbox OAuth 2.0 authentication and in-memory token lifecycle engine.
-2. **Phase 2**: Cryptographic Hash-Chain Ledger, Embedded SQLite Store, and RFC 8785 (JCS) canonical serialization.
-3. **Phase 3**: Deterministic Reference AI Shopping Agent, Explicit Purchase Authorization, and Real PayPal Orders v2 API integration.
+**AgentAudit** is a verifiable, audit-grade commerce platform built in Rust for the PayPal AI Hackathon. It pairs an autonomous AI shopping agent with an append-only, tamper-evident cryptographic decision ledger, real PayPal Sandbox Orders v2 checkout, PayPal webhook signature verification, and deterministic dispute-to-session correlation with dual-chain evidence verification.
 
 ---
 
-## Architecture & Technology Stack
+## 1. Project Overview & Architecture
 
-- **Language & Runtime**: Rust (stable toolchain)
-- **Web Framework**: [Axum](https://github.com/tokio-rs/axum) (v0.7)
-- **Async Runtime**: [Tokio](https://tokio.rs/) (v1.x, full features)
-- **Embedded Database**: [SQLx](https://github.com/launchbadge/sqlx) (v0.9) with SQLite (`WAL` mode, foreign keys, 5s busy timeout)
-- **Cryptography & Hashing**: [sha2](https://github.com/RustCrypto/hashes) (SHA-256), [hex](https://github.com/KokaKiwi/rust-hex)
-- **Canonical Serialization**: [serde_jcs](https://crates.io/crates/serde_jcs) (strict RFC 8785 JSON Canonicalization Scheme via `ryu-js`), [serde](https://serde.rs/) & [serde_json](https://github.com/serde-rs/json)
-- **HTTP Client**: [Reqwest](https://github.com/seanmonstar/reqwest) (v0.12, JSON & rustls-tls)
-- **Identifiers & Timestamps**: [uuid](https://github.com/uuid-rs/uuid) (v4), [chrono](https://github.com/chronotope/chrono) (UTC RFC 3339)
-- **Configuration & Logging**: [dotenvy](https://github.com/allan2/dotenvy), [tracing](https://github.com/tokio-rs/tracing) & [tracing-subscriber](https://github.com/tokio-rs/tracing)
-- **Payment Gateway**: PayPal Orders API v2 (`/v2/checkout/orders`) with Sandbox buyer approval and capture workflow.
+Modern AI shopping agents make autonomous procurement decisions that involve real money. If an agent selects the wrong item, violates a budget, or a customer later disputes a charge, traditional logs can be edited, deleted, or disputed.
 
----
-
-## Project Structure
+AgentAudit solves this by creating two intertwined, cryptographically verifiable Merkle/hash-chain ledgers:
+1. **Purchase Decision Ledger**: Records every decision step (`REQUIREMENTS_EXTRACTED`, `PRODUCT_SELECTED`, `PURCHASE_AUTHORIZED`, `PAYPAL_ORDER_CREATED`, `PAYPAL_PAYMENT_CAPTURED`) using RFC 8785 JSON Canonicalization Scheme (JCS) and SHA-256 chaining. Once captured, the purchase session is finalized and sealed with a frozen root hash.
+2. **Dispute Audit Ledger**: When a PayPal dispute webhook arrives, the dispute is persisted and anchored either to the finalized purchase session root hash (`PURCHASE_ROOT_HASH`) or to a genesis anchor (`GENESIS_HASH`). Every subsequent event appends an RFC 8785 audit step, creating an immutable history of dispute lifecycle events.
+3. **Dual-Chain Verification**: Auditors can cryptographically prove the entire chain of custody: the dispute root hash verifies the dispute history, which links to the purchase session root hash, which verifies every decision the AI agent made leading up to the purchase.
 
 ```
-d:\paypal\
-├── data/                               # Embedded SQLite database (agentic_commerce.db)
-├── src/
-│   ├── config.rs                       # Centralized configuration with secret redaction
-│   ├── db/
-│   │   └── mod.rs                      # SQLite pool init, WAL mode, migrations (sessions, decision_steps)
-│   ├── error.rs                        # Application-wide AppError and Axum IntoResponse mappings
-│   ├── http_client.rs                  # Reusable async HTTP client with timeouts & User-Agent
-│   ├── ledger/
-│   │   ├── mod.rs                      # Ledger module exports
-│   │   └── hash.rs                     # Length-prefixed SHA-256 binary encoder & RFC 8785 serializer
-│   ├── lib.rs                          # AppState, Axum router, and REST endpoint controllers
-│   ├── main.rs                         # Binary entry point and HTTP server initialization
-│   ├── models/
-│   │   ├── mod.rs                      # Data contract re-exports
-│   │   ├── authorization.rs            # PurchaseAuthorization contracts and request/response DTOs
-│   │   ├── catalog.rs                  # Product and ProductSpecification models
-│   │   ├── config.rs                   # Configuration DTOs
-│   │   ├── error.rs                    # Error response DTOs
-│   │   ├── health.rs                   # GET /health response contract
-│   │   ├── ledger.rs                   # Session, DecisionStep, and VerificationResult DTOs
-│   │   ├── oauth.rs                    # PayPal OAuth and auth-check contracts
-│   │   ├── paypal_orders.rs            # PayPal Orders v2 request, response, and capture DTOs
-│   │   ├── shopping.rs                 # ShoppingRequirements, candidates, rejections, evaluations DTOs
-│   │   └── webhook.rs                  # PayPal Webhook envelopes, headers, and signature verification DTOs
-│   └── services/
-│       ├── mod.rs                      # Service layer re-exports
-│       ├── auth.rs                     # PayPal OAuth 2.0 service and in-memory token cache
-│       ├── catalog.rs                  # Deterministic local mock headphone catalog service
-│       ├── ledger.rs                   # LedgerService: sessions, append event, finalize, concurrency lock
-│       ├── paypal_orders.rs            # Real PayPal Orders v2 service: create order & capture
-│       ├── requirement_extractor.rs    # Deterministic natural language requirement extractor
-│       ├── shopping_agent.rs           # ShoppingAgentService: Milestones 1-4 & authorization
-│       ├── verification.rs             # VerificationService: cryptographic hash-chain integrity auditor
-│       ├── webhook_persistence.rs     # WebhookPersistenceService: durable SQLite store, idempotency, backoff
-│       └── webhook_verifier.rs         # WebhookVerifierService: PayPal signature verification client
-├── tests/
-│   ├── ledger_tests.rs                 # Database, hashing, integrity verification & concurrency tests
-│   ├── live_sandbox_and_agent_e2e.rs   # End-to-end shopping & real PayPal Sandbox suite
-│   ├── oauth_tests.rs                  # PayPal OAuth mock integration tests
-│   ├── shopping_and_paypal_tests.rs    # Shopping agent, authorization, and PayPal Orders v2 tests
-│   ├── webhook_persistence_tests.rs    # Milestone 4.2 webhook persistence, idempotency & backoff tests
-│   └── webhook_tests.rs                # Milestone 4.1 signature verification client & security tests
-├── .env                                # Local environment secrets (excluded from Git)
-├── .env.example                        # Template environment configuration with placeholders
-├── .gitignore                          # Excludes target/, .env, data/, *.db*
-├── Cargo.toml                          # Package manifest and dependencies
-└── README.md                           # Documentation and architectural guide
+                           [ Customer / Client ]
+                                     |
+               +---------------------+---------------------+
+               |                                           |
+               v                                           v
+    [ Shopping Agent Flow ]                     [ PayPal Webhook Flow ]
+               |                                           |
+    POST /api/shopping/sessions                 POST /api/webhooks/paypal
+               |                                           |
+     +---------+---------+                     +-----------+-----------+
+     | Requirements      |                     | 1. Size limit (256KB) |
+     | Catalog selection |                     | 2. Header extraction  |
+     | Budget check      |                     | 3. Raw byte parsing   |
+     +---------+---------+                     | 4. Verify signature   |
+               |                               | 5. Persist raw bytes  |
+    POST .../authorize (Customer)              +-----------+-----------+
+               |                                           | (PENDING)
+    POST .../orders (PayPal v2)                            v
+               |                              [ DisputeConsumerService ]
+    POST .../capture (PayPal v2)                           | (BEGIN IMMEDIATE)
+               |                               +-----------+-----------+
+    POST .../finalize                          | Tier 1: Capture ID    |
+               |                               | Tier 2: Custom/UUID   |
+     [ Finalized Session ]                     | Tier 3: Order ID      |
+     [ Frozen Root Hash  ]                     +-----------+-----------+
+               ^                                           |
+               |=========== Genesis Anchor ================|
+                                                           v
+                                                [ Dispute Audit Ledger ]
+                                                [ Dual-Chain Integrity ]
 ```
 
 ---
 
-## Phase 3 Architecture: Shopping Agent & PayPal Orders
+## 2. Main Features & Supported Workflows
 
-### 1. Deterministic Product Catalog
-The mock catalog (`CatalogService`) seeds 9 realistic headphone products in USD:
-- `hp-sony-wh1000xm5`: Sony WH-1000XM5 ($399.99, 30h battery, Hybrid Active ANC, Rating: 4.8)
-- `hp-bose-qc45`: Bose QuietComfort 45 ($329.00, 24h battery, Acoustic ANC, Rating: 4.7)
-- `hp-anker-q30`: Anker Soundcore Life Q30 ($79.99, 40h battery, Hybrid Active ANC, Rating: 4.5)
-- `hp-anker-q20`: Anker Soundcore Life Q20 ($49.99, 30h battery, Active ANC, Rating: 4.4)
-- `hp-jbl-tune760`: JBL Tune 760NC ($89.95, 35h battery, Active ANC, Rating: 4.3)
-- `hp-senn-hd450`: Sennheiser HD 450BT ($129.95, 30h battery, Active ANC, Rating: 4.2)
-- `hp-audio-technica-m20x`: Audio-Technica ATH-M20xBT ($79.00, 60h battery, Passive ANC, Rating: 4.4)
-- `hp-sony-ch720n`: Sony WH-CH720N ($148.00, 35h battery, Dual Noise Sensor ANC, Rating: 4.5)
-- `hp-skullcandy-hesh`: Skullcandy Hesh ANC ($99.99, 22h battery, Active ANC, Rating: 4.1)
-
-### 2. Natural Language Requirement Extraction
-[`RequirementExtractor`](file:///d:/paypal/src/services/requirement_extractor.rs) deterministically parses requests like:
-> *"Buy noise-canceling headphones under $100 with at least 30 hours battery life."*
-- **Budget**: Extracts `$100` (`maximum_budget = 100.0`). Rejects non-positive budgets or missing budgets.
-- **Currency**: Validates USD. Rejects unsupported currencies (e.g. INR, EUR, GBP) with helpful instructions.
-- **Battery**: Extracts `30` (`minimum_battery_hours = Some(30)`).
-- **Features**: Detects `noise-canceling`, `wireless`, etc.
-- **Brand**: Detects preferred brands (Sony, Bose, Anker, etc.).
-
-### 3. Shopping Agent Workflow & Milestones
-- **Milestone 1 (User Request)**: Creates session in SQLite ledger (Seq 0: `INITIAL_PROMPT`). Records extracted requirements as Seq 1 (`REQUIREMENTS_EXTRACTED`).
-- **Milestone 2 (Catalog Exploration)**: Explores category and records candidates in Seq 2 (`CATALOG_SEARCH`).
-- **Milestone 3 (Product Comparison)**: Evaluates candidates against mandatory constraints.
-  - Rejects items exceeding budget with explicit reason (`PRODUCT_REJECTED`).
-  - Rejects items lacking required battery life or ANC (`PRODUCT_REJECTED`).
-  - Computes deterministic score for compliant candidates and records comparison matrix (`PRODUCT_COMPARISON`).
-- **Milestone 4 (Final Selection)**: Selects highest-scoring product (e.g. `hp-anker-q30`) and records rationale in Seq 7 (`PRODUCT_SELECTED`).
-
-### 4. Explicit Purchase Authorization (Trust Barrier)
-Product selection does **NOT** grant payment permission. The agent requires explicit customer approval:
-- Customer submits `POST /api/shopping/sessions/:session_id/authorize` with `selected_product_id`, `maximum_authorized_amount`, and `approved: true`.
-- Verifies authorized amount $\ge$ product price.
-- Commits `PURCHASE_AUTHORIZED` event into the hash chain.
-- Orders cannot be created without prior authorization.
-
-### 5. Real PayPal Orders v2 API & Payment Lifecycle
-- **Order Creation (`POST /v2/checkout/orders`)**:
-  - Uses `intent: "CAPTURE"`, `amount: { currency_code: "USD", value: "79.99" }`.
-  - Attaches `custom_id: session_id` and idempotency header `PayPal-Request-Id`.
-  - Stores `paypal_order_id` in `sessions` table.
-  - Commits `PAYPAL_ORDER_CREATED` event with the buyer approval URL.
-- **Sandbox Buyer Approval**:
-  - Customer opens approval URL in browser and logs in with their PayPal Sandbox Personal account.
-- **Payment Capture (`POST /v2/checkout/orders/{id}/capture`)**:
-  - Requires buyer approval.
-  - Verifies status is `COMPLETED`.
-  - Commits `PAYPAL_PAYMENT_CAPTURED` event with transaction ID.
-  - Finalizes the session: `sessions.root_hash` locks to the capture event's hash.
+- **Deterministic AI Shopping Agent**: Extracts budget, brand, and specifications from natural language prompts, selects matching products, rejects invalid/out-of-budget requests, and logs all evaluations.
+- **Explicit Purchase Authorization**: Prevents unapproved purchases. Orders cannot be created or captured without an explicit customer authorization step recorded in the ledger.
+- **PayPal Orders v2 Integration**: Generates sandbox approval URLs, tracks order lifecycle, and executes payment captures.
+- **Verifiable Decision Ledger**: RFC 8785 (JCS) deterministic canonical serialization, SHA-256 hash chaining, SQLite write-ahead logging (WAL), and single-call cryptographic verification (`GET /api/sessions/:id/verify`).
+- **PayPal Webhook Ingress**:
+  - Retains and persists original raw request bytes.
+  - Verifies PayPal transmission headers and RSA-SHA256 signatures before persistence.
+  - Rejects duplicate deliveries with divergent payloads (`409 Conflict`).
+  - Idempotently acknowledges duplicate deliveries (`200 OK`).
+- **Dispute Consumer & Worker Fencing**:
+  - Leases pending events using cryptographically random UUID fencing tokens.
+  - Automatic reclamation of abandoned events after 300 seconds.
+  - Single atomic `BEGIN IMMEDIATE` transaction coordinating dispute ingestion and fenced status transitions.
+  - Stale worker fencing: Reclaimed leases cannot commit dispute mutations.
+- **Deterministic 5-Tier Dispute Correlation**:
+  - Matches disputes to purchase sessions via Capture ID, Custom ID / Session UUID, Order ID, and fallback Show Dispute Details API.
+  - Strictly requires candidate sessions to be finalized and verified.
+  - Supports late correlation when an initially unmatched dispute later matches a finalized session.
+- **Out-of-Order Hardening**:
+  - Authoritative PayPal timestamps (`dispute_create_time`, `dispute_update_time`) drive updates.
+  - Older out-of-order webhooks cannot overwrite newer dispute status.
 
 ---
 
-## Ledger Event Sequence
+## 3. Technology Stack
 
-Every observable action is cryptographically committed using length-prefixed SHA-256 and RFC 8785 canonical JSON:
+- **Language**: Rust (2021 edition, stable toolchain)
+- **Web Framework**: [Axum](https://github.com/tokio-rs/axum) (v0.7) with Tower
+- **Asynchronous Runtime**: [Tokio](https://tokio.rs/) (v1.x, full features)
+- **Database Engine**: [SQLx](https://github.com/launchbadge/sqlx) (v0.9) with SQLite (`WAL` mode, foreign keys, 5s busy timeout)
+- **Cryptography**: [sha2](https://github.com/RustCrypto/hashes) (SHA-256), [hex](https://github.com/KokaKiwi/rust-hex)
+- **Canonical Serialization**: [serde_jcs](https://crates.io/crates/serde_jcs) (RFC 8785 JSON Canonicalization Scheme), `serde`, `serde_json`
+- **HTTP Client**: [Reqwest](https://github.com/seanmonstar/reqwest) (v0.12, JSON, rustls-tls)
+- **Identifiers & Time**: [uuid](https://github.com/uuid-rs/uuid) (v4), [chrono](https://github.com/chronotope/chrono) (UTC RFC 3339)
+- **Logging & Diagnostics**: [tracing](https://github.com/tokio-rs/tracing), `tracing-subscriber` (with secret redaction)
 
-```
-[Seq 0] INITIAL_PROMPT           -> Genesis block (prev: 64 zeros)
-[Seq 1] REQUIREMENTS_EXTRACTED   -> Category, budget, battery, features
-[Seq 2] CATALOG_SEARCH           -> Retrieved candidate products
-[Seq 3] PRODUCT_REJECTED         -> Price > budget (e.g. Sony XM5)
-[Seq 4] PRODUCT_REJECTED         -> Lacks ANC (e.g. Audio-Technica M20x)
-[Seq 5] PRODUCT_REJECTED         -> Battery < 30h (e.g. Skullcandy Hesh)
-[Seq 6] PRODUCT_COMPARISON       -> Scored candidates matrix
-[Seq 7] PRODUCT_SELECTED         -> Chosen item (hp-anker-q30) & rationale
-[Seq 8] PURCHASE_AUTHORIZED      -> Customer authorization with spending limit
-[Seq 9] PAYPAL_ORDER_CREATED     -> PayPal Order ID & Sandbox approval URL
-[Seq 10] PAYPAL_PAYMENT_CAPTURED -> Confirmed transaction & final session root hash
+---
+
+## 4. Prerequisites & Setup Instructions
+
+### Prerequisites
+- **Rust Toolchain**: 1.75+ (recommended: latest stable `rustup update stable`)
+- **SQLite**: Embedded via `sqlx` (no external database server needed)
+- **PayPal Developer Account**: Sandbox account with Client ID and Client Secret from the [PayPal Developer Dashboard](https://developer.paypal.com/)
+
+### Installation
+```bash
+# Clone the repository
+git clone https://github.com/your-org/paypalagent.git
+cd paypalagent
+
+# Copy environment configuration
+cp .env.example .env
 ```
 
 ---
 
-## API Reference & Examples
+## 5. Environment-Variable Configuration
 
-### 1. Execute Shopping Agent
+Configure the application by editing `.env` (or setting environment variables):
+
 ```bash
-curl -X POST http://localhost:5000/api/shopping/sessions \
-  -H "Content-Type: application/json" \
-  -d '{"prompt": "Buy noise-canceling headphones under $100 with at least 30 hours battery life."}'
-```
-**Response (`201 Created`)**:
-```json
-{
-  "success": true,
-  "session_id": "8f3b14e9-df72-46a2-921d-72013f9c6d48",
-  "prompt": "Buy noise-canceling headphones under $100 with at least 30 hours battery life.",
-  "requirements": {
-    "category": "headphones",
-    "maximum_budget": 100.0,
-    "currency": "USD",
-    "required_features": ["noise-canceling"],
-    "minimum_battery_hours": 30,
-    "preferred_brand": null
-  },
-  "candidates_found": 3,
-  "rejected_candidates": [
-    {
-      "product_id": "hp-sony-wh1000xm5",
-      "product_name": "Sony WH-1000XM5 Wireless Noise-Canceling Headphones",
-      "price": 399.99,
-      "currency": "USD",
-      "rejection_reason": "Price $399.99 exceeds customer budget limit of $100.00"
-    },
-    {
-      "product_id": "hp-audio-technica-m20x",
-      "product_name": "Audio-Technica ATH-M20xBT Wireless Over-Ear Headphones",
-      "price": 79.0,
-      "currency": "USD",
-      "rejection_reason": "Product lacks active noise cancellation (ANC)"
-    },
-    {
-      "product_id": "hp-skullcandy-hesh",
-      "product_name": "Skullcandy Hesh ANC Wireless Noise-Canceling Headphones",
-      "price": 99.99,
-      "currency": "USD",
-      "rejection_reason": "Battery life (22 hours) is below required minimum (30 hours)"
-    }
-  ],
-  "selected_product": {
-    "product_id": "hp-anker-q30",
-    "name": "Anker Soundcore Life Q30 Hybrid Active Noise Cancelling Headphones",
-    "brand": "Anker",
-    "category": "headphones",
-    "price": 79.99,
-    "currency": "USD",
-    "rating": 4.5,
-    "available_stock": 120,
-    "description": "Advanced noise cancellation technology with 40-hour battery life and custom EQ via app.",
-    "specifications": {
-      "battery_life_hours": 40,
-      "noise_cancelling": true,
-      "anc_type": "Hybrid Active",
-      "wireless": true,
-      "bluetooth_version": "5.0",
-      "weight_grams": 260,
-      "microphone": true,
-      "water_resistant": false
-    },
-    "features": ["noise-canceling", "wireless", "bluetooth", "transparency-mode", "app-control"]
-  },
-  "selection_rationale": "Selected 'Anker Soundcore Life Q30 Hybrid Active Noise Cancelling Headphones' (Score: 154.50): Meets all mandatory constraints with 4.5-star rating, 40h battery, and price of $79.99 (within $100.00 budget).",
-  "current_sequence_index": 7,
-  "latest_hash": "2195f00e3cf2c9cebb8c68aa238ea5f7d2fbf0..."
-}
+# Server Configuration
+PORT=5000
+RUST_LOG=agentic_commerce=info,tower_http=info,axum=info
+
+# Embedded SQLite Database Configuration
+DATABASE_URL=sqlite:data/agentic_commerce.db?mode=rwc
+
+# PayPal Sandbox API Configuration
+PAYPAL_BASE_URL=https://api-m.sandbox.paypal.com
+PAYPAL_CLIENT_ID=your_paypal_sandbox_client_id_here
+PAYPAL_CLIENT_SECRET=your_paypal_sandbox_client_secret_here
+
+# PayPal Webhook Configuration
+PAYPAL_WEBHOOK_ID=your_paypal_sandbox_webhook_id_here
 ```
 
-### 2. Authorize Purchase
-```bash
-curl -X POST http://localhost:5000/api/shopping/sessions/8f3b14e9-df72-46a2-921d-72013f9c6d48/authorize \
-  -H "Content-Type: application/json" \
-  -d '{
-    "selected_product_id": "hp-anker-q30",
-    "maximum_authorized_amount": 85.00,
-    "currency": "USD",
-    "approved": true
-  }'
-```
-**Response (`200 OK`)**:
-```json
-{
-  "success": true,
-  "session_id": "8f3b14e9-df72-46a2-921d-72013f9c6d48",
-  "authorization": {
-    "session_id": "8f3b14e9-df72-46a2-921d-72013f9c6d48",
-    "selected_product_id": "hp-anker-q30",
-    "maximum_authorized_amount": 85.0,
-    "currency": "USD",
-    "authorization_status": "APPROVED",
-    "authorization_timestamp": "2026-11-07T12:00:00Z",
-    "authorization_method": "CUSTOMER_EXPLICIT_APPROVAL"
-  },
-  "sequence_index": 8,
-  "current_hash": "c530ae8ffb22105..."
-}
-```
+> **Security Note:** Secrets in `.env` are strictly excluded from source control via `.gitignore`. The `Config` struct enforces secret redaction in all `Debug` and logging outputs.
 
-### 3. Create PayPal Sandbox Order
-```bash
-curl -X POST http://localhost:5000/api/shopping/sessions/8f3b14e9-df72-46a2-921d-72013f9c6d48/orders
-```
-**Response (`201 Created`)**:
-```json
-{
-  "success": true,
-  "session_id": "8f3b14e9-df72-46a2-921d-72013f9c6d48",
-  "order_id": "5C7829402M839211K",
-  "status": "CREATED",
-  "approval_url": "https://www.sandbox.paypal.com/checkoutnow?token=5C7829402M839211K"
-}
-```
+---
 
-### 4. Buyer Approval & Order Capture
-1. Open the `approval_url` in a browser.
-2. Sign in with PayPal Sandbox Personal account and click **Complete Purchase**.
-3. Call the capture endpoint:
-```bash
-curl -X POST http://localhost:5000/api/shopping/sessions/8f3b14e9-df72-46a2-921d-72013f9c6d48/capture
-```
-**Response (`200 OK`)**:
-```json
-{
-  "success": true,
-  "session_id": "8f3b14e9-df72-46a2-921d-72013f9c6d48",
-  "order_id": "5C7829402M839211K",
-  "capture_id": "7TY284919P901234L",
-  "status": "COMPLETED",
-  "final_root_hash": "9e81b672a912803..."
-}
-```
+## 6. Database Migrations & Startup
 
-### 5. Inspect Full Session Details & Cryptographic Audit
+AgentAudit uses an embedded SQLite database with automatic transactional migrations on startup:
+- Creates required tables (`sessions`, `decision_steps`, `webhook_events`, `disputes`, `dispute_audit_steps`).
+- Configures `PRAGMA journal_mode = WAL;`, `PRAGMA synchronous = NORMAL;`, `PRAGMA busy_timeout = 5000;`, and `PRAGMA foreign_keys = ON;`.
+- Installs the genesis anchor immutability trigger `trg_protect_dispute_genesis_anchor`.
+- Seamlessly applies forward migrations if upgrading from an earlier schema.
+
+### Starting the Server
 ```bash
-curl http://localhost:5000/api/shopping/sessions/8f3b14e9-df72-46a2-921d-72013f9c6d48
+cargo run
 ```
-**Response (`200 OK`)**:
-```json
-{
-  "session_id": "8f3b14e9-df72-46a2-921d-72013f9c6d48",
-  "initial_prompt": "Buy noise-canceling headphones under $100 with at least 30 hours battery life.",
-  "requirements": {
-    "category": "headphones",
-    "maximum_budget": 100.0,
-    "currency": "USD",
-    "required_features": ["noise-canceling"],
-    "minimum_battery_hours": 30,
-    "preferred_brand": null
-  },
-  "selected_product": { "product_id": "hp-anker-q30", "price": 79.99, ... },
-  "authorization": { "authorization_status": "APPROVED", "maximum_authorized_amount": 85.0, ... },
-  "paypal_order_id": "5C7829402M839211K",
-  "is_finalized": true,
-  "root_hash": "9e81b672a912803...",
-  "event_count": 11,
-  "verification": {
-    "session_id": "8f3b14e9-df72-46a2-921d-72013f9c6d48",
-    "status": "VALID",
-    "total_steps": 11,
-    "verified_steps": 11,
-    "calculated_root_hash": "9e81b672a912803...",
-    "stored_root_hash": "9e81b672a912803...",
-    "first_invalid_sequence_index": null,
-    "error_code": null,
-    "explanation": "Cryptographic hash chain is verified and continuous"
-  }
-}
+The server will bind to `http://127.0.0.1:5000`.
+
+---
+
+## 7. Available HTTP Endpoints
+
+### System & Health
+- `GET /health`: Health check endpoint. Returns `{"success": true, "message": "AgenticCommerce backend is running"}`.
+- `GET /api/paypal/auth-check`: Verifies PayPal Sandbox OAuth connectivity and returns cached token status without leaking credentials.
+
+### Shopping Agent & Purchase Flow
+- `GET /api/catalog/products`: Returns the deterministic mock headphone product catalog.
+- `POST /api/shopping/sessions`: Submits a shopping prompt (e.g. `{"prompt": "Buy noise canceling headphones under $100"}`). Evaluates budget, selects product, and initializes purchase ledger.
+- `GET /api/shopping/sessions/:session_id`: Returns session status, requirement extraction details, and product candidate evaluations.
+- `POST /api/shopping/sessions/:session_id/authorize`: Submits customer purchase authorization (`{"authorized": true}`). Records `PURCHASE_AUTHORIZED` in ledger.
+- `POST /api/shopping/sessions/:session_id/orders`: Creates a real PayPal Sandbox Order v2 and returns the buyer approval link.
+- `POST /api/shopping/sessions/:session_id/capture`: Captures PayPal payment after buyer approval, appends `PAYPAL_PAYMENT_CAPTURED`, and automatically finalizes the ledger.
+
+### Verifiable Ledger & Audit
+- `GET /api/sessions/:session_id`: Retrieves session metadata.
+- `GET /api/sessions/:session_id/events`: Retrieves all decision steps in sequence.
+- `GET /api/sessions/:session_id/verify`: Executes full cryptographic verification of the hash-chain ledger, recomputing all step hashes and verifying the root hash.
+
+### PayPal Webhook Ingress
+- `POST /api/webhooks/paypal`: Ingests incoming PayPal webhook deliveries.
+  - Requires transmission headers (`paypal-auth-algo`, `paypal-cert-url`, `paypal-transmission-id`, `paypal-transmission-sig`, `paypal-transmission-time`).
+  - Verifies signature against PayPal's verification API.
+  - Persists exact raw bytes to SQLite as `PENDING`.
+  - Returns `202 Accepted` for new events, `200 OK` for duplicate events, `409 Conflict` for divergent duplicates, `401 Unauthorized` for bad signatures, and `400 Bad Request` for missing headers or bad JSON.
+
+---
+
+## 8. PayPal Sandbox Setup & Webhook Configuration
+
+1. Log in to the [PayPal Developer Dashboard](https://developer.paypal.com/).
+2. Create a REST API app under **Sandbox Apps & Credentials**.
+3. Copy **Client ID** and **Client Secret** into your `.env`.
+4. In the PayPal Developer Dashboard under your App settings, click **Add Webhook**.
+5. Set Webhook URL (e.g. using ngrok for local testing: `https://<your-subdomain>.ngrok.app/api/webhooks/paypal`).
+6. Select events to subscribe to:
+   - `Customer dispute created` (`CUSTOMER.DISPUTE.CREATED`)
+   - `Customer dispute resolved` (`CUSTOMER.DISPUTE.RESOLVED`)
+   - `Customer dispute updated` (`CUSTOMER.DISPUTE.UPDATED`)
+   - `Payment capture completed` (`PAYMENT.CAPTURE.COMPLETED`)
+7. Copy the generated **Webhook ID** and set `PAYPAL_WEBHOOK_ID` in `.env`.
+
+---
+
+## 9. Shopping Agent & Purchase Authorization Flow
+
+```
+1. Customer submits prompt: "Buy Sony WH-1000XM5 under $400"
+   --> Agent parses budget ($400), brand (Sony), features (ANC).
+   --> Matches catalog product ($399.99).
+   --> Creates session in database with genesis hash.
+
+2. Explicit Authorization Gate:
+   --> Order CANNOT be placed without authorization.
+   --> Customer reviews and calls POST .../authorize.
+   --> Ledger records PURCHASE_AUTHORIZED step.
+
+3. PayPal Sandbox Checkout:
+   --> POST .../orders calls PayPal Orders v2 API with custom_id = session_id.
+   --> Customer approves payment in PayPal Sandbox portal.
+   --> POST .../capture executes payment capture.
+   --> Ledger records PAYPAL_PAYMENT_CAPTURED and finalizes session.
+   --> Root hash is sealed and immutable.
 ```
 
 ---
 
-## Automated Testing & Verification
+## 10. Dispute Ingestion, Correlation & Evidence Verification
 
-Run the entire verification suite:
+```
+1. Customer opens dispute in PayPal Sandbox.
+2. PayPal transmits webhook to POST /api/webhooks/paypal:
+   - Ingress verifies RSA-SHA256 signature via PayPal API.
+   - Exact raw bytes saved in SQLite with PENDING status.
+3. DisputeConsumerService acquires lease:
+   - Generates UUID fencing token.
+   - Runs deterministic local correlation (Tiers 1-3).
+   - In single BEGIN IMMEDIATE transaction:
+     * Upserts dispute record anchored to purchase root hash.
+     * Appends RFC 8785 canonical audit step.
+     * Marks webhook PROCESSED under fencing token.
+4. Dual-Chain Verification:
+   - Verifies dispute audit steps from genesis anchor to dispute root hash.
+   - Verifies purchase session ledger from genesis hash to purchase root hash.
+   - Proves zero tampering across the complete shopping and dispute lifecycle.
+```
+
+---
+
+## 11. Test Commands
+
+Run the comprehensive project test suite:
+
 ```bash
-# 1. Format check
+# Check code formatting
 cargo fmt --check
 
-# 2. Type & borrow check
-cargo check
+# Validate all targets and tests compile without warnings
+cargo check --all-targets
 
-# 3. Full test suite (72 automated tests)
+# Run the complete test suite (213 tests across 13 test suites)
 cargo test
 
-# 4. Optimized release build
+# Build optimized release binary
 cargo build --release
 ```
 
-Test coverage includes:
-- **Phase 1 (10 tests)**: PayPal OAuth authentication, in-memory cache, safety-margin auto-refresh, stampede prevention.
-- **Phase 2 (24 tests)**: SQLite schema migrations, foreign keys, unique sequence constraints, persistence across reconnects, length-prefixed hashing, RFC 8785 UTF-16 surrogate sorting, 8 isolated tamper vectors.
-- **Phase 3 (16 tests)**:
-  - Catalog listing, lookups, and multi-field keyword search.
-  - Requirement parsing, budget extraction, currency validation.
-  - Shopping agent canonical selection, constraint rejection reasons.
-  - Unmatched prompt handling preserving audit session.
-  - Explicit purchase authorization, spending limits, duplicate rejection.
-  - Real PayPal Orders API v2 creation, custom_id matching, Bearer auth.
-  - Buyer approval validation and capture execution.
-  - Failed/pending capture handling without false finalization.
-  - End-to-end REST lifecycle and finalized root hash alignment.
-- **Unit & Documentation Tests (22 tests)**: Serde contracts, health check, secret masking.
+### Test Suite Structure
+| Test Suite | File | Tests | Purpose |
+|---|---|---|---|
+| Library Unit Tests | `src/lib.rs` | 52 | Canonical hashing, models, error formatting, migrations |
+| Binary Unit Tests | `src/main.rs` | 1 | Health check integration |
+| Dispute Webhook E2E | `tests/dispute_webhook_e2e_tests.rs` | 11 | End-to-end webhook ingress to dual-chain verification |
+| Dispute Consumer | `tests/dispute_consumer_tests.rs` | 16 | Worker fencing, lease reclamation, retry backoff |
+| Dispute Correlation | `tests/dispute_correlation_tests.rs` | 15 | 5-tier deterministic correlation hierarchy |
+| Dispute Service | `tests/dispute_service_tests.rs` | 17 | Immutability triggers, out-of-order updates, late correlation |
+| Webhook HTTP Route | `tests/webhook_http_tests.rs` | 11 | HTTP status codes, headers, size limits, idempotency |
+| Webhook Persistence | `tests/webhook_persistence_tests.rs` | 20 | Byte preservation, SHA-256 divergence, concurrency |
+| Webhook Verification | `tests/webhook_tests.rs` | 12 | PayPal signature verification client, cert URL validation |
+| Ledger Tests | `tests/ledger_tests.rs` | 24 | RFC 8785 hashing, tamper detection, finalization |
+| Shopping & PayPal | `tests/shopping_and_paypal_tests.rs` | 16 | Shopping agent selection, authorization gate, order capture |
+| OAuth Tests | `tests/oauth_tests.rs` | 10 | PayPal OAuth token caching, expiration refresh, mock errors |
+| Live Sandbox & E2E | `tests/live_sandbox_and_agent_e2e.rs` | 8 | End-to-end shopping with real/mock sandbox workflows |
+
+---
+
+## 12. Security Model & Known Limitations
+
+### Security Controls
+- **Zero Secret Exposure**: Client secrets, OAuth tokens, and webhook signatures are never logged or exposed in HTTP responses.
+- **Pre-Persistence Verification**: Webhooks are never persisted before PayPal cryptographic signature verification succeeds.
+- **Payload Divergence Rejection**: Webhooks with duplicate event IDs but different raw payload bytes are rejected with `409 Conflict`.
+- **Worker Fencing**: All state updates require active worker lease tokens. Stale workers fenced out by timeout cannot commit dispute mutations.
+- **Genesis Immutability**: Database trigger `trg_protect_dispute_genesis_anchor` prevents updating genesis anchor hashes.
+- **Strict Finalization Guard**: Disputes can only link to sessions with verified, sealed root hashes.
+- **Conservative Correlation**: Disputes are never linked based on weak attributes (amount, customer name, email, or timestamps). Unmatched disputes are anchored to `GENESIS_HASH` for manual review.
+
+### Known Limitations
+- **Hash Chain Scope**: A valid cryptographic hash chain proves append-only immutability and sequence integrity of agent decisions and recorded payloads; it does not physical delivery of goods or customer satisfaction, which are governed by PayPal's dispute resolution framework.
+- **Local Correlation vs. Fallback**: Local consumer correlation operates on Tiers 1–3 (Capture ID, Custom ID, Order ID). Tier 4 (calling PayPal Show Dispute Details API) is reserved for explicit audit reconciliation and is omitted from the consumer path to avoid external network latency.
+- **Worker Supervisor**: Step 5 & 6 provide discrete, fenced consumer methods (`process_next_event`, `process_leased_event`). A continuous background polling loop / multi-threaded worker pool is left for background service orchestrators.
+
+---
+
+## 13. Current Implementation Status & Future Work
+
+### Current Status: Phase 4 Milestone 4.4 Complete
+- [x] Phase 1: PayPal OAuth 2.0 & Token Engine
+- [x] Phase 2: Cryptographic Hash-Chain Ledger & SQLite Store
+- [x] Phase 3: Deterministic Shopping Agent & PayPal Orders v2 Integration
+- [x] Phase 4 Milestone 4.1: Webhook Signature Verification Client
+- [x] Phase 4 Milestone 4.2: Durable Webhook Store & Idempotency
+- [x] Phase 4 Milestone 4.3: 5-Tier Deterministic Dispute Correlation
+- [x] Phase 4 Milestone 4.4: Production Verification, Fencing, Out-of-Order Hardening, HTTP Ingress, and E2E Testing
+
+### Future Work
+- **Background Worker Daemon**: Multi-worker background process with graceful shutdown and configurable polling intervals.
+- **Merchant Web Dashboard**: UI for merchants to review flagged disputes (`MANUAL_REVIEW_REQUIRED`) and inspect dual-chain verification proofs.
+- **Multi-Currency Support**: Dynamic foreign exchange rate anchoring for non-USD transactions.

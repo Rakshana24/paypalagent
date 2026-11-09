@@ -164,6 +164,14 @@ async fn setup_app_with_paypal_url(base_url: &str) -> (axum::Router, AppState) {
         auth_service.clone(),
         ledger_service.clone(),
     ));
+    let webhook_verifier = Arc::new(agentic_commerce::services::WebhookVerifierService::new(
+        config.clone(),
+        http_client.clone(),
+        auth_service.clone(),
+    ));
+    let webhook_persistence = Arc::new(agentic_commerce::services::WebhookPersistenceService::new(
+        pool.clone(),
+    ));
 
     let state = AppState {
         config,
@@ -174,6 +182,8 @@ async fn setup_app_with_paypal_url(base_url: &str) -> (axum::Router, AppState) {
         catalog_service,
         shopping_agent,
         paypal_orders,
+        webhook_verifier,
+        webhook_persistence,
     };
 
     let router = create_router(state.clone());

@@ -65,6 +65,30 @@ pub enum AppError {
 
     #[error("Payload hash mismatch: {0}")]
     PayloadHashMismatch(String),
+
+    #[error("Dispute not found: {0}")]
+    DisputeNotFound(String),
+
+    #[error("Duplicate dispute identifier: {0}")]
+    DuplicateDispute(String),
+
+    #[error("Invalid dispute state transition: {0}")]
+    InvalidDisputeState(String),
+
+    #[error("Invalid dispute data: {0}")]
+    InvalidDisputeData(String),
+
+    #[error("Dispute audit chain integrity error: {0}")]
+    DisputeAuditIntegrity(String),
+
+    #[error("Dispute correlation conflict: {0}")]
+    DisputeCorrelationConflict(String),
+
+    #[error("Missing authoritative dispute timestamp: {0}")]
+    MissingAuthoritativeTimestamp(String),
+
+    #[error("Dispute processing lease expired or fenced out: {0}")]
+    DisputeLeaseFencedOut(String),
 }
 
 impl IntoResponse for AppError {
@@ -98,7 +122,17 @@ impl IntoResponse for AppError {
             AppError::WebhookVerificationFailed(msg) => (StatusCode::UNAUTHORIZED, msg.clone()),
             AppError::WebhookNotFound(msg) => (StatusCode::NOT_FOUND, msg.clone()),
             AppError::InvalidStateTransition(msg) => (StatusCode::CONFLICT, msg.clone()),
-            AppError::PayloadHashMismatch(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg.clone()),
+            AppError::PayloadHashMismatch(msg) => (StatusCode::CONFLICT, msg.clone()),
+            AppError::DisputeNotFound(msg) => (StatusCode::NOT_FOUND, msg.clone()),
+            AppError::DuplicateDispute(msg) => (StatusCode::CONFLICT, msg.clone()),
+            AppError::InvalidDisputeState(msg) => (StatusCode::CONFLICT, msg.clone()),
+            AppError::InvalidDisputeData(msg) => (StatusCode::BAD_REQUEST, msg.clone()),
+            AppError::DisputeAuditIntegrity(msg) => (StatusCode::CONFLICT, msg.clone()),
+            AppError::DisputeCorrelationConflict(msg) => (StatusCode::CONFLICT, msg.clone()),
+            AppError::MissingAuthoritativeTimestamp(msg) => {
+                (StatusCode::UNPROCESSABLE_ENTITY, msg.clone())
+            }
+            AppError::DisputeLeaseFencedOut(msg) => (StatusCode::CONFLICT, msg.clone()),
             AppError::Database(err) => {
                 tracing::error!("Database operation failed: {}", err);
                 (
@@ -118,5 +152,56 @@ impl IntoResponse for AppError {
         }));
 
         (status, body).into_response()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_dispute_error_status_codes_and_formatting() {
+        let err = AppError::DisputeNotFound("PP-D-12345".to_string());
+        assert_eq!(err.to_string(), "Dispute not found: PP-D-12345");
+        let resp = err.into_response();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+
+        let err = AppError::DuplicateDispute("PP-D-12345".to_string());
+        assert_eq!(err.to_string(), "Duplicate dispute identifier: PP-D-12345");
+        let resp = err.into_response();
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+
+        let err =
+            AppError::InvalidDisputeState("Cannot transition from RESOLVED to OPEN".to_string());
+        let resp = err.into_response();
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+
+        let err = AppError::InvalidDisputeData("Amount must be positive".to_string());
+        let resp = err.into_response();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+        let err = AppError::DisputeAuditIntegrity("Hash chain sequence gap detected".to_string());
+        let resp = err.into_response();
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+
+        let err = AppError::DisputeCorrelationConflict("Ambiguous candidate sessions".to_string());
+        let resp = err.into_response();
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+
+        let err = AppError::MissingAuthoritativeTimestamp("Resource lacks update_time".to_string());
+        let resp = err.into_response();
+        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+        let err = AppError::DisputeLeaseFencedOut("Lease claimed by worker-2".to_string());
+        let resp = err.into_response();
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+
+        let err = AppError::PayloadHashMismatch("Payload hash divergence detected".to_string());
+        assert_eq!(
+            err.to_string(),
+            "Payload hash mismatch: Payload hash divergence detected"
+        );
+        let resp = err.into_response();
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
     }
 }
