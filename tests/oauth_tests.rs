@@ -399,6 +399,7 @@ async fn test_auth_check_endpoint_integration() {
         paypal_orders,
         webhook_verifier,
         webhook_persistence,
+        webhook_notify: std::sync::Arc::new(tokio::sync::Notify::new()),
     };
 
     let router = create_router(state);

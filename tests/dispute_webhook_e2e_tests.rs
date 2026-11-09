@@ -196,6 +196,7 @@ async fn setup_e2e_test_context(
         paypal_orders,
         webhook_verifier,
         webhook_persistence: persistence_service.clone(),
+        webhook_notify: Arc::new(tokio::sync::Notify::new()),
     };
 
     let router = create_router(state);

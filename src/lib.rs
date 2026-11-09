@@ -42,6 +42,7 @@ pub struct AppState {
     pub paypal_orders: Arc<PayPalOrdersService>,
     pub webhook_verifier: Arc<WebhookVerifierService>,
     pub webhook_persistence: Arc<WebhookPersistenceService>,
+    pub webhook_notify: Arc<tokio::sync::Notify>,
 }
 
 /// GET /health handler returning operational status.
@@ -235,6 +236,9 @@ pub async fn paypal_webhook_handler(
     // 6. Return appropriate success acknowledgement based on idempotency outcome
     match persistence_result {
         WebhookPersistenceResult::Inserted(record) => {
+            // Wake up background dispute worker immediately upon new event persistence
+            state.webhook_notify.notify_one();
+
             tracing::info!(
                 event_id = %record.event_id,
                 event_type = %record.event_type,

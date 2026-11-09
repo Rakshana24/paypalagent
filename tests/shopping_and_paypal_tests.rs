@@ -184,6 +184,7 @@ async fn setup_app_with_paypal_url(base_url: &str) -> (axum::Router, AppState) {
         paypal_orders,
         webhook_verifier,
         webhook_persistence,
+        webhook_notify: std::sync::Arc::new(tokio::sync::Notify::new()),
     };
 
     let router = create_router(state.clone());

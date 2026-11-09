@@ -6,10 +6,41 @@ use agentic_commerce::config::Config;
 use agentic_commerce::db::init_db;
 use agentic_commerce::http_client::{create_http_client, HttpClientConfig};
 use agentic_commerce::services::{
-    CatalogService, LedgerService, PayPalAuthService, PayPalOrdersService, ShoppingAgentService,
-    VerificationService, WebhookPersistenceService, WebhookVerifierService,
+    BackgroundDisputeWorker, CancellationToken, CatalogService, DisputeConsumerService,
+    DisputeCorrelationService, DisputeService, LedgerService, PayPalAuthService,
+    PayPalOrdersService, ShoppingAgentService, VerificationService, WebhookPersistenceService,
+    WebhookVerifierService,
 };
 use agentic_commerce::{create_router, AppState};
+
+/// Listens for process termination signals (Ctrl+C / SIGINT, and SIGTERM on Unix).
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        tokio::signal::ctrl_c()
+            .await
+            .expect("Failed to install Ctrl+C signal handler");
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("Failed to install SIGTERM signal handler")
+            .recv()
+            .await;
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {
+            tracing::info!("Received Ctrl+C (SIGINT) signal; initiating graceful shutdown...");
+        }
+        _ = terminate => {
+            tracing::info!("Received SIGTERM signal; initiating graceful shutdown...");
+        }
+    }
+}
 
 #[tokio::main]
 async fn main() {
@@ -69,6 +100,40 @@ async fn main() {
     ));
     let webhook_persistence = Arc::new(WebhookPersistenceService::new(db_pool.clone()));
 
+    // Initialize dispute processing services
+    let dispute_service = Arc::new(DisputeService::new(
+        db_pool.clone(),
+        verification_service.clone(),
+    ));
+    let dispute_correlation = Arc::new(DisputeCorrelationService::new(
+        config_arc.clone(),
+        http_client.clone(),
+        auth_service.clone(),
+        db_pool.clone(),
+        verification_service.clone(),
+    ));
+    let dispute_consumer = Arc::new(DisputeConsumerService::new(
+        db_pool.clone(),
+        webhook_persistence.clone(),
+        dispute_service.clone(),
+        dispute_correlation.clone(),
+    ));
+
+    // Shared notification channel between HTTP ingress and background worker
+    let webhook_notify = Arc::new(tokio::sync::Notify::new());
+
+    // Initialize autonomous background dispute worker
+    let worker = BackgroundDisputeWorker::new(dispute_consumer.clone(), webhook_notify.clone());
+
+    // Cooperative shutdown token for the background worker
+    let cancel_token = CancellationToken::new();
+    let worker_cancel_token = cancel_token.clone();
+
+    // Spawn background worker task (automatically drains pending events on startup)
+    let worker_handle = tokio::spawn(async move {
+        worker.run(worker_cancel_token).await;
+    });
+
     let state = AppState {
         config: config_arc,
         http_client,
@@ -80,6 +145,7 @@ async fn main() {
         paypal_orders,
         webhook_verifier,
         webhook_persistence,
+        webhook_notify: webhook_notify.clone(),
     };
 
     let app = create_router(state);
@@ -91,9 +157,27 @@ async fn main() {
 
     tracing::info!("Server running on http://{}", addr);
 
+    // Run HTTP server with graceful shutdown on Ctrl+C / SIGTERM
     axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal())
         .await
         .expect("Server encountered a fatal error while running");
+
+    tracing::info!("HTTP server stopped; signaling background dispute worker to terminate...");
+    cancel_token.cancel();
+
+    // Await background worker termination to ensure in-flight events complete cleanly
+    match tokio::time::timeout(std::time::Duration::from_secs(10), worker_handle).await {
+        Ok(Ok(())) => {
+            tracing::info!("Background dispute worker shut down cleanly");
+        }
+        Ok(Err(join_err)) => {
+            tracing::error!("Background dispute worker join error: {}", join_err);
+        }
+        Err(_) => {
+            tracing::warn!("Timed out waiting for background worker shutdown after 10s");
+        }
+    }
 }
 
 #[cfg(test)]

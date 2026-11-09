@@ -102,6 +102,7 @@ struct TestAppContext {
     pub pool: SqlitePool,
     pub router: Router,
     pub mock_state: MockPayPalServerState,
+    pub webhook_notify: Arc<tokio::sync::Notify>,
 }
 
 async fn setup_test_app(
@@ -147,6 +148,7 @@ async fn setup_test_app(
         auth_service.clone(),
     ));
     let webhook_persistence = Arc::new(WebhookPersistenceService::new(pool.clone()));
+    let webhook_notify = Arc::new(tokio::sync::Notify::new());
 
     let state = AppState {
         config,
@@ -159,6 +161,7 @@ async fn setup_test_app(
         paypal_orders,
         webhook_verifier,
         webhook_persistence,
+        webhook_notify: webhook_notify.clone(),
     };
 
     let router = create_router(state);
@@ -167,6 +170,7 @@ async fn setup_test_app(
         pool,
         router,
         mock_state,
+        webhook_notify,
     }
 }
 
@@ -723,5 +727,203 @@ async fn test_10_validly_signed_unrelated_event_persisted_successfully() {
     assert_eq!(
         stored_bytes, raw_payload,
         "Must preserve exact incoming bytes"
+    );
+}
+
+// =========================================================================
+// 12. New valid event triggers webhook_notify
+// =========================================================================
+#[tokio::test]
+async fn test_12_new_event_triggers_webhook_notify() {
+    let ctx = setup_test_app(
+        StatusCode::OK,
+        r#"{"verification_status": "SUCCESS"}"#,
+        None,
+    )
+    .await;
+
+    let raw_payload = b"{\n  \"id\": \"WH-EVT-NOTIFY-01\",\n  \"event_type\": \"CUSTOMER.DISPUTE.CREATED\",\n  \"resource_type\": \"dispute\",\n  \"create_time\": \"2026-11-09T00:00:00Z\",\n  \"resource\": {\n    \"dispute_id\": \"PP-D-NOTIFY-01\",\n    \"status\": \"UNDER_REVIEW\"\n  }\n}";
+
+    let mut req_builder = Request::builder()
+        .method("POST")
+        .uri("/api/webhooks/paypal")
+        .header(header::CONTENT_TYPE, "application/json");
+
+    for (k, v) in
+        valid_transmission_headers("TX-NOTIFY-01", "sig-valid-notify", "2026-11-09T00:00:00Z")
+    {
+        req_builder = req_builder.header(k, v);
+    }
+
+    let req = req_builder.body(Body::from(raw_payload.to_vec())).unwrap();
+
+    let resp = ctx.router.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::ACCEPTED);
+
+    // Assert that webhook_notify was signaled
+    let notification_received = tokio::time::timeout(
+        std::time::Duration::from_millis(100),
+        ctx.webhook_notify.notified(),
+    )
+    .await;
+    assert!(
+        notification_received.is_ok(),
+        "New persisted webhook event must signal webhook_notify"
+    );
+}
+
+// =========================================================================
+// 13. Duplicate webhook delivery does not trigger webhook_notify
+// =========================================================================
+#[tokio::test]
+async fn test_13_duplicate_event_does_not_trigger_webhook_notify() {
+    let ctx = setup_test_app(
+        StatusCode::OK,
+        r#"{"verification_status": "SUCCESS"}"#,
+        None,
+    )
+    .await;
+
+    let raw_payload = b"{\n  \"id\": \"WH-EVT-NOTIFY-DUP\",\n  \"event_type\": \"CUSTOMER.DISPUTE.CREATED\",\n  \"resource_type\": \"dispute\",\n  \"create_time\": \"2026-11-09T00:00:00Z\",\n  \"resource\": {\n    \"dispute_id\": \"PP-D-NOTIFY-DUP\",\n    \"status\": \"UNDER_REVIEW\"\n  }\n}";
+
+    // First delivery (new event)
+    let mut req_builder1 = Request::builder()
+        .method("POST")
+        .uri("/api/webhooks/paypal")
+        .header(header::CONTENT_TYPE, "application/json");
+
+    for (k, v) in
+        valid_transmission_headers("TX-NOTIFY-DUP-1", "sig-valid-dup", "2026-11-09T00:00:00Z")
+    {
+        req_builder1 = req_builder1.header(k, v);
+    }
+
+    let req1 = req_builder1.body(Body::from(raw_payload.to_vec())).unwrap();
+    let resp1 = ctx.router.clone().oneshot(req1).await.unwrap();
+    assert_eq!(resp1.status(), StatusCode::ACCEPTED);
+
+    // Consume the notification from the first insertion
+    ctx.webhook_notify.notified().await;
+
+    // Second delivery (duplicate event)
+    let mut req_builder2 = Request::builder()
+        .method("POST")
+        .uri("/api/webhooks/paypal")
+        .header(header::CONTENT_TYPE, "application/json");
+
+    for (k, v) in
+        valid_transmission_headers("TX-NOTIFY-DUP-2", "sig-valid-dup", "2026-11-09T00:00:00Z")
+    {
+        req_builder2 = req_builder2.header(k, v);
+    }
+
+    let req2 = req_builder2.body(Body::from(raw_payload.to_vec())).unwrap();
+    let resp2 = ctx.router.oneshot(req2).await.unwrap();
+    assert_eq!(resp2.status(), StatusCode::OK);
+
+    // Assert that webhook_notify was NOT signaled for duplicate delivery
+    let notification_received = tokio::time::timeout(
+        std::time::Duration::from_millis(50),
+        ctx.webhook_notify.notified(),
+    )
+    .await;
+    assert!(
+        notification_received.is_err(),
+        "Duplicate webhook delivery must not signal webhook_notify"
+    );
+}
+
+// =========================================================================
+// 14. Persistence / verification failure does not trigger webhook_notify
+// =========================================================================
+#[tokio::test]
+async fn test_14_persistence_failure_does_not_trigger_webhook_notify() {
+    // 14a. Signature verification failure (401 Unauthorized)
+    let ctx_bad_sig = setup_test_app(
+        StatusCode::OK,
+        r#"{"verification_status": "FAILURE"}"#,
+        None,
+    )
+    .await;
+
+    let raw_payload = b"{\n  \"id\": \"WH-EVT-FAIL-01\",\n  \"event_type\": \"CUSTOMER.DISPUTE.CREATED\",\n  \"resource_type\": \"dispute\",\n  \"resource\": {\"dispute_id\": \"PP-D-FAIL-01\"}\n}";
+
+    let mut req_builder = Request::builder()
+        .method("POST")
+        .uri("/api/webhooks/paypal")
+        .header(header::CONTENT_TYPE, "application/json");
+
+    for (k, v) in valid_transmission_headers("TX-FAIL-01", "sig-invalid", "2026-11-09T00:00:00Z") {
+        req_builder = req_builder.header(k, v);
+    }
+
+    let req = req_builder.body(Body::from(raw_payload.to_vec())).unwrap();
+    let resp = ctx_bad_sig.router.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+
+    let notification_received = tokio::time::timeout(
+        std::time::Duration::from_millis(50),
+        ctx_bad_sig.webhook_notify.notified(),
+    )
+    .await;
+    assert!(
+        notification_received.is_err(),
+        "Signature verification failure must not signal webhook_notify"
+    );
+
+    // 14b. Payload divergence conflict (409 Conflict)
+    let ctx_diverge = setup_test_app(
+        StatusCode::OK,
+        r#"{"verification_status": "SUCCESS"}"#,
+        None,
+    )
+    .await;
+
+    let payload_original = b"{\"id\":\"WH-EVT-DIV-01\",\"event_type\":\"CUSTOMER.DISPUTE.CREATED\",\"resource_type\":\"dispute\",\"create_time\":\"2026-11-09T00:00:00Z\",\"resource\":{\"dispute_id\":\"PP-1\",\"status\":\"UNDER_REVIEW\"}}";
+    let payload_divergent = b"{\"id\":\"WH-EVT-DIV-01\",\"event_type\":\"CUSTOMER.DISPUTE.CREATED\",\"resource_type\":\"dispute\",\"create_time\":\"2026-11-09T00:00:00Z\",\"resource\":{\"dispute_id\":\"TAMPERED\",\"status\":\"UNDER_REVIEW\"}}";
+
+    // Insert first event
+    let mut req1 = Request::builder()
+        .method("POST")
+        .uri("/api/webhooks/paypal")
+        .header(header::CONTENT_TYPE, "application/json");
+    for (k, v) in valid_transmission_headers("TX-DIV-1", "sig-1", "2026-11-09T00:00:00Z") {
+        req1 = req1.header(k, v);
+    }
+    let resp1 = ctx_diverge
+        .router
+        .clone()
+        .oneshot(req1.body(Body::from(payload_original.to_vec())).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(resp1.status(), StatusCode::ACCEPTED);
+
+    // Consume first notification
+    ctx_diverge.webhook_notify.notified().await;
+
+    // Send divergent payload with same event_id
+    let mut req2 = Request::builder()
+        .method("POST")
+        .uri("/api/webhooks/paypal")
+        .header(header::CONTENT_TYPE, "application/json");
+    for (k, v) in valid_transmission_headers("TX-DIV-2", "sig-2", "2026-11-09T00:00:00Z") {
+        req2 = req2.header(k, v);
+    }
+    let resp2 = ctx_diverge
+        .router
+        .oneshot(req2.body(Body::from(payload_divergent.to_vec())).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(resp2.status(), StatusCode::CONFLICT);
+
+    // Assert divergent insertion did not signal notification
+    let notification_diverge = tokio::time::timeout(
+        std::time::Duration::from_millis(50),
+        ctx_diverge.webhook_notify.notified(),
+    )
+    .await;
+    assert!(
+        notification_diverge.is_err(),
+        "Payload divergence failure must not signal webhook_notify"
     );
 }

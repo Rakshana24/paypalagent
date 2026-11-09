@@ -73,6 +73,7 @@ async fn setup_test_app() -> (axum::Router, sqlx::SqlitePool) {
         paypal_orders,
         webhook_verifier,
         webhook_persistence,
+        webhook_notify: std::sync::Arc::new(tokio::sync::Notify::new()),
     };
 
     let router = agentic_commerce::create_router(state);
