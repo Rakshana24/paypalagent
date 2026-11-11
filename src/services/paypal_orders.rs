@@ -8,7 +8,8 @@ use crate::models::ledger::AppendEventRequest;
 use crate::models::paypal_orders::{
     CaptureOrderResponse, CreateOrderResponse, PayPalAmount, PayPalCaptureOrderResponse,
     PayPalCreateOrderRequest, PayPalCreateOrderResponse, PayPalExperienceContext,
-    PayPalExperienceWrapper, PayPalPaymentSource, PayPalPurchaseUnitRequest,
+    PayPalExperienceWrapper, PayPalOrderDetails, PayPalOrderStatusResponse, PayPalPaymentSource,
+    PayPalPurchaseUnitRequest,
 };
 use crate::models::shopping::SelectionRecord;
 use crate::services::auth::PayPalAuthService;
@@ -354,6 +355,83 @@ impl PayPalOrdersService {
             capture_id,
             status: capture_resp.status,
             final_root_hash: finalization.root_hash,
+        })
+    }
+
+    /// Queries the authoritative PayPal Orders v2 status for a session.
+    pub async fn get_order_status(
+        &self,
+        session_id: &str,
+    ) -> Result<PayPalOrderStatusResponse, AppError> {
+        let session = self.ledger_service.get_session(session_id).await?;
+        let order_id = session.paypal_order_id.ok_or_else(|| {
+            AppError::InvalidPayload(
+                "Cannot check order status: no PayPal order has been created for this session"
+                    .to_string(),
+            )
+        })?;
+
+        let token = self.auth_service.get_valid_access_token().await?;
+
+        let url = format!(
+            "{}/v2/checkout/orders/{}",
+            self.config.paypal_base_url, order_id
+        );
+
+        debug!(
+            session_id = %session_id,
+            order_id = %order_id,
+            url = %url,
+            "Querying GET /v2/checkout/orders/:id from PayPal Sandbox"
+        );
+
+        let resp = self
+            .http_client
+            .get(&url)
+            .bearer_auth(token)
+            .header("Content-Type", "application/json")
+            .send()
+            .await?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            let err_body = resp.text().await.unwrap_or_default();
+            error!(
+                status = %status,
+                order_id = %order_id,
+                body = %err_body,
+                "PayPal order status lookup failed"
+            );
+            return Err(AppError::PayPalApi(format!(
+                "PayPal order status lookup error ({}): {}",
+                status, err_body
+            )));
+        }
+
+        let details: PayPalOrderDetails = resp.json().await?;
+        let is_approved = details.status == "APPROVED";
+        let is_completed = details.status == "COMPLETED";
+        let payer_email = details.payer.as_ref().and_then(|p| p.email_address.clone());
+        let payer_id = details.payer.as_ref().and_then(|p| p.payer_id.clone());
+
+        info!(
+            session_id = %session_id,
+            order_id = %details.id,
+            order_status = %details.status,
+            is_approved = is_approved,
+            is_completed = is_completed,
+            "Authoritative PayPal order status retrieved"
+        );
+
+        Ok(PayPalOrderStatusResponse {
+            success: true,
+            session_id: session_id.to_string(),
+            order_id: details.id,
+            status: details.status,
+            is_approved,
+            is_completed,
+            payer_email,
+            payer_id,
         })
     }
 }

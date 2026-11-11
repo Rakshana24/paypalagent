@@ -234,7 +234,40 @@ export interface ShoppingRequirements {
   preferred_brand?: string | null;
 }
 
-export interface ProductSpecifications {
+export interface ShoppingRequest {
+  prompt: string;
+}
+
+export interface CandidateSummary {
+  product_id: string;
+  name: string;
+  brand: string;
+  price: number;
+  currency: string;
+  battery_life_hours: number;
+  noise_cancelling: boolean;
+  rating: number;
+}
+
+export interface RejectionRecord {
+  product_id: string;
+  product_name: string;
+  price: number;
+  currency: string;
+  rejection_reason: string;
+}
+
+export interface CandidateEvaluation {
+  product_id: string;
+  product_name: string;
+  score: number;
+  price: number;
+  battery_hours: number;
+  rating: number;
+  brand_matched: boolean;
+}
+
+export interface ProductSpecification {
   battery_life_hours?: number;
   noise_cancelling: boolean;
   anc_type?: string;
@@ -244,6 +277,8 @@ export interface ProductSpecifications {
   microphone: boolean;
   water_resistant: boolean;
 }
+
+export type ProductSpecifications = ProductSpecification;
 
 export interface Product {
   product_id: string;
@@ -255,8 +290,37 @@ export interface Product {
   rating: number;
   available_stock: number;
   description: string;
-  specifications: ProductSpecifications;
+  specifications: ProductSpecification;
   features: string[];
+}
+
+export interface SelectionRecord {
+  selected_product: Product;
+  price: number;
+  currency: string;
+  selection_rationale: string;
+}
+
+export interface ShoppingSessionResponse {
+  success: boolean;
+  session_id: string;
+  prompt: string;
+  requirements: ShoppingRequirements;
+  candidates_found: number;
+  rejected_candidates: RejectionRecord[];
+  selected_product?: Product | null;
+  selection_rationale?: string | null;
+  current_sequence_index: number;
+  latest_hash: string;
+}
+
+export type AuthorizationStatus = 'APPROVED' | 'REJECTED';
+
+export interface AuthorizePurchaseRequest {
+  selected_product_id: string;
+  maximum_authorized_amount: number;
+  currency: string;
+  approved: boolean;
 }
 
 export interface PurchaseAuthorization {
@@ -264,17 +328,55 @@ export interface PurchaseAuthorization {
   selected_product_id: string;
   maximum_authorized_amount: number;
   currency: string;
-  authorization_status: string;
+  authorization_status: AuthorizationStatus | string;
   authorization_timestamp: string;
   authorization_method: string;
 }
 
+export interface AuthorizePurchaseResponse {
+  success: boolean;
+  session_id: string;
+  authorization: PurchaseAuthorization;
+  sequence_index: number;
+  current_hash: string;
+}
+
+export interface CreateOrderResponse {
+  success: boolean;
+  session_id: string;
+  order_id: string;
+  status: string;
+  approval_url?: string | null;
+}
+
+export interface CaptureOrderResponse {
+  success: boolean;
+  session_id: string;
+  order_id: string;
+  capture_id?: string | null;
+  status: string;
+  final_root_hash: string;
+}
+
+export interface PayPalOrderStatusResponse {
+  success: boolean;
+  session_id: string;
+  order_id: string;
+  status: string;
+  is_approved: boolean;
+  is_completed: boolean;
+  payer_email?: string | null;
+  payer_id?: string | null;
+}
+
+export type VerificationStatus = 'VALID' | 'TAMPERED';
+
 export interface VerificationResult {
   session_id: string;
-  status: string;
+  status: VerificationStatus | string;
   total_steps: number;
   verified_steps: number;
-  calculated_root_hash: string;
+  calculated_root_hash?: string | null;
   stored_root_hash?: string | null;
   first_invalid_sequence_index?: number | null;
   error_code?: string | null;

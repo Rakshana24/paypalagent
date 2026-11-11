@@ -15,7 +15,7 @@ export const RebuttalSection: React.FC<RebuttalSectionProps> = ({
       <div className="section-card-header">
         <div className="section-title-wrap">
           <span className="epistemic-tag deterministic">DETERMINISTIC_INFERENCE</span>
-          <h3 className="section-card-title">5. Merchant Rebuttal Strategy &amp; Missing Evidence</h3>
+          <h3 className="section-card-title">5. Merchant Rebuttal Strategy & Missing Evidence</h3>
         </div>
         <div className="header-badges">
           <span

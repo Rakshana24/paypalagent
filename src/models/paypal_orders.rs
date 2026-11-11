@@ -79,6 +79,39 @@ pub struct PayPalCreateOrderResponse {
     pub links: Vec<PayPalLink>,
 }
 
+/// Payer identity extracted from PayPal Orders v2.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct PayPalPayer {
+    #[serde(default)]
+    pub email_address: Option<String>,
+    #[serde(default)]
+    pub payer_id: Option<String>,
+}
+
+/// Detailed order object retrieved from PayPal Orders v2 (GET /v2/checkout/orders/{id}).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PayPalOrderDetails {
+    pub id: String,
+    pub status: String,
+    #[serde(default)]
+    pub intent: Option<String>,
+    #[serde(default)]
+    pub payer: Option<PayPalPayer>,
+}
+
+/// Safe authoritative status response returned to frontend (GET /api/shopping/sessions/{id}/order-status).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PayPalOrderStatusResponse {
+    pub success: bool,
+    pub session_id: String,
+    pub order_id: String,
+    pub status: String,
+    pub is_approved: bool,
+    pub is_completed: bool,
+    pub payer_email: Option<String>,
+    pub payer_id: Option<String>,
+}
+
 /// Detailed capture transaction from PayPal.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PayPalCaptureDetail {

@@ -92,7 +92,7 @@ export const EvidenceLookup: React.FC<EvidenceLookupProps> = ({
                   <strong>{error.message}</strong>
                 </p>
                 <p style={{ marginTop: '0.5rem', fontSize: '0.8125rem' }}>
-                  This dispute identifier is not present in AgentAudit&apos;s ingested SQLite records.
+                  This dispute identifier is not present in AgentAudit's ingested SQLite records.
                   To generate an evidence brief, the dispute must first be ingested via PayPal webhook
                   (e.g. <code>CUSTOMER.DISPUTE.CREATED</code>) or registered through the dispute processing pipeline.
                 </p>

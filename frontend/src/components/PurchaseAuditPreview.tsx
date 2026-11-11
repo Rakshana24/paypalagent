@@ -6,15 +6,29 @@ export const DEMO_SESSION_ID = '26dc47ea-95c4-4434-ae24-005ea9751ae7';
 
 interface PurchaseAuditPreviewProps {
   onSessionLoaded?: (sessionId: string) => void;
+  initialSessionId?: string;
 }
 
-export const PurchaseAuditPreview: React.FC<PurchaseAuditPreviewProps> = ({ onSessionLoaded }) => {
-  const [sessionIdInput, setSessionIdInput] = useState<string>(DEMO_SESSION_ID);
+export const PurchaseAuditPreview: React.FC<PurchaseAuditPreviewProps> = ({
+  onSessionLoaded,
+  initialSessionId,
+}) => {
+  const [sessionIdInput, setSessionIdInput] = useState<string>(
+    initialSessionId || DEMO_SESSION_ID
+  );
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [sessionDetail, setSessionDetail] = useState<ShoppingSessionDetail | null>(null);
   const [events, setEvents] = useState<DecisionStep[] | null>(null);
   const [expandedPayloads, setExpandedPayloads] = useState<Record<number, boolean>>({});
+
+  // Sync and load if initialSessionId changes
+  React.useEffect(() => {
+    if (initialSessionId && initialSessionId.trim()) {
+      setSessionIdInput(initialSessionId.trim());
+      void handleLoadSession(initialSessionId.trim());
+    }
+  }, [initialSessionId]);
 
   const handleLoadSession = async (targetId: string) => {
     const trimmed = targetId.trim();
@@ -89,7 +103,7 @@ export const PurchaseAuditPreview: React.FC<PurchaseAuditPreviewProps> = ({ onSe
           return (
             <div className="step-summary-content prompt-box">
               <span className="step-label">Buyer Instruction:</span>
-              <p className="prompt-text">&ldquo;{parsed.initial_prompt}&rdquo;</p>
+              <p className="prompt-text">“{parsed.initial_prompt}”</p>
             </div>
           );
         case 'REQUIREMENTS_EXTRACTED':
@@ -111,7 +125,7 @@ export const PurchaseAuditPreview: React.FC<PurchaseAuditPreviewProps> = ({ onSe
           return (
             <div className="step-summary-content">
               <span className="text-sm text-muted">
-                Evaluated {parsed.candidates_retrieved_count ?? parsed.candidates?.length ?? 0} catalog candidate items in category &ldquo;{parsed.category}&rdquo;
+                Evaluated {parsed.candidates_retrieved_count ?? parsed.candidates?.length ?? 0} catalog candidate items in category “{parsed.category}”
               </span>
             </div>
           );
@@ -136,7 +150,7 @@ export const PurchaseAuditPreview: React.FC<PurchaseAuditPreviewProps> = ({ onSe
           return (
             <div className="step-summary-content selection-box">
               <div className="selection-header">
-                <strong>{parsed.selected_product?.name}</strong> &bull; {formatMoney(parsed.price, parsed.currency)}
+                <strong>{parsed.selected_product?.name}</strong> • {formatMoney(parsed.price, parsed.currency)}
               </div>
               <p className="selection-rationale">{parsed.selection_rationale}</p>
             </div>
@@ -470,7 +484,7 @@ export const PurchaseAuditPreview: React.FC<PurchaseAuditPreviewProps> = ({ onSe
                         <div className="hash-trail">
                           <span className="hash-trail-label">Hash:</span>
                           <code className="hash-trail-val">{step.current_hash.slice(0, 16)}...</code>
-                          <span className="hash-trail-arrow">&larr;</span>
+                          <span className="hash-trail-arrow">←</span>
                           <span className="hash-trail-label">Prev:</span>
                           <code className="hash-trail-val">{step.previous_hash.slice(0, 16)}...</code>
                         </div>

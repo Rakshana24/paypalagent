@@ -23,7 +23,7 @@ export const DisputeSummaryCard: React.FC<DisputeSummaryCardProps> = ({
       <div className="section-card-header">
         <div className="section-title-wrap">
           <span className="epistemic-tag paypal-data">RECORDED_PAYPAL_DATA</span>
-          <h3 className="section-card-title">1. PayPal Dispute &amp; Correlation Summary</h3>
+          <h3 className="section-card-title">1. PayPal Dispute & Correlation Summary</h3>
         </div>
         <div className="header-badges">
           <span className={`status-badge-outline ${correlationSummary.status.toLowerCase()}`}>
@@ -56,7 +56,7 @@ export const DisputeSummaryCard: React.FC<DisputeSummaryCardProps> = ({
           <div>
             <strong>Case Stage Notice: Formal Bank Chargeback</strong>
             <p>
-              This dispute represents an external financial institution chargeback initiated through the buyer&apos;s card issuer.
+              This dispute represents an external financial institution chargeback initiated through the buyer's card issuer.
             </p>
           </div>
         </div>

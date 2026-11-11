@@ -55,7 +55,7 @@ export const AgentDecisionTimeline: React.FC<AgentDecisionTimelineProps> = ({
               </span>
             </div>
             <p className="timeline-text prompt-quote">
-              &ldquo;{trail.initial_prompt.prompt}&rdquo;
+              “{trail.initial_prompt.prompt}”
             </p>
             <div className="source-ref-badge">
               Step Hash: <code>{trail.initial_prompt.source.step_hash?.slice(0, 16)}...</code>

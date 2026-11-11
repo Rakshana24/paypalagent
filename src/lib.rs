@@ -21,8 +21,9 @@ use models::webhook::{PayPalWebhookEvent, PayPalWebhookHeaders, WebhookPersisten
 use models::{
     AppendEventRequest, AppendEventResponse, AuthCheckResponse, AuthorizePurchaseRequest,
     AuthorizePurchaseResponse, CaptureOrderResponse, CreateOrderResponse, CreateSessionRequest,
-    CreateSessionResponse, DecisionStep, FinalizeSessionResponse, HealthResponse, Product, Session,
-    ShoppingRequest, ShoppingSessionDetail, ShoppingSessionResponse, VerificationResult,
+    CreateSessionResponse, DecisionStep, FinalizeSessionResponse, HealthResponse,
+    PayPalOrderStatusResponse, Product, Session, ShoppingRequest, ShoppingSessionDetail,
+    ShoppingSessionResponse, VerificationResult,
 };
 use services::{
     CatalogService, DisputeEvidenceService, LedgerService, PayPalAuthService, PayPalOrdersService,
@@ -168,6 +169,15 @@ pub async fn capture_shopping_order(
     Path(session_id): Path<String>,
 ) -> Result<Json<CaptureOrderResponse>, AppError> {
     let res = state.paypal_orders.capture_order(&session_id).await?;
+    Ok(Json(res))
+}
+
+/// GET /api/shopping/sessions/:session_id/order-status handler to query authoritative live PayPal order status.
+pub async fn get_shopping_order_status(
+    State(state): State<AppState>,
+    Path(session_id): Path<String>,
+) -> Result<Json<PayPalOrderStatusResponse>, AppError> {
+    let res = state.paypal_orders.get_order_status(&session_id).await?;
     Ok(Json(res))
 }
 
@@ -333,6 +343,10 @@ pub fn create_router(state: AppState) -> Router {
         .route(
             "/api/shopping/sessions/:session_id/orders",
             post(create_shopping_order),
+        )
+        .route(
+            "/api/shopping/sessions/:session_id/order-status",
+            get(get_shopping_order_status),
         )
         .route(
             "/api/shopping/sessions/:session_id/capture",

@@ -21,13 +21,19 @@ import { TransactionProofCard } from './components/TransactionProofCard';
 import { RebuttalSection } from './components/RebuttalSection';
 import { MarkdownViewer } from './components/MarkdownViewer';
 import { PurchaseAuditPreview } from './components/PurchaseAuditPreview';
+import { ShoppingStudio } from './components/ShoppingStudio';
+import { useShoppingJourney } from './hooks/useShoppingJourney';
 
 type ViewTab = 'investigation' | 'markdown' | 'json';
-type DashboardMode = 'purchase-audit' | 'dispute-investigation';
+type DashboardMode = 'shopping-studio' | 'purchase-audit' | 'dispute-investigation';
 
 export const App: React.FC = () => {
-  // Mode selection state
-  const [dashboardMode, setDashboardMode] = useState<DashboardMode>('purchase-audit');
+  // Mode selection state - AI Shopping Studio is the first destination
+  const [dashboardMode, setDashboardMode] = useState<DashboardMode>('shopping-studio');
+  const [selectedAuditSessionId, setSelectedAuditSessionId] = useState<string>('');
+
+  // Hoist shopping journey state at the app level to prevent navigation resets
+  const journey = useShoppingJourney();
 
   // System status state
   const [health, setHealth] = useState<HealthResponse | null>(null);
@@ -139,13 +145,32 @@ export const App: React.FC = () => {
         <div className="dashboard-mode-selector">
           <button
             type="button"
+            className={`mode-btn ${dashboardMode === 'shopping-studio' ? 'active' : ''}`}
+            onClick={() => setDashboardMode('shopping-studio')}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <span className="mode-badge primary">Customer Journey</span>
+              {journey.sessionId && (
+                <span className="mode-mini-status pulse" title="Active Shopping Session in Memory">
+                  Active
+                </span>
+              )}
+            </div>
+            <span className="mode-title">1. AI Shopping & Studio</span>
+            <span className="mode-desc">
+              Natural language shopping agent, constraints extraction and product recommendation
+            </span>
+          </button>
+
+          <button
+            type="button"
             className={`mode-btn ${dashboardMode === 'purchase-audit' ? 'active' : ''}`}
             onClick={() => setDashboardMode('purchase-audit')}
           >
-            <span className="mode-badge demo">Demo Ready</span>
-            <span className="mode-title">1. Purchase Audit Preview</span>
+            <span className="mode-badge demo">Verified Ledger</span>
+            <span className="mode-title">2. Purchase Audit Preview</span>
             <span className="mode-desc">
-              Inspect completed purchase session, event timeline, & cryptographic chain
+              Inspect completed purchase session, event timeline, and cryptographic chain
             </span>
           </button>
 
@@ -155,19 +180,30 @@ export const App: React.FC = () => {
             onClick={() => setDashboardMode('dispute-investigation')}
           >
             <span className="mode-badge dispute">Formal Dispute</span>
-            <span className="mode-title">2. Dispute Evidence Investigation</span>
+            <span className="mode-title">3. Dispute Evidence Investigation</span>
             <span className="mode-desc">
-              Adjudication rebuttal brief, dual-chain proofs, & PayPal settlement
+              Adjudication rebuttal brief, dual-chain proofs, and PayPal settlement
             </span>
           </button>
         </div>
 
-        {/* View 1: Purchase Audit Preview */}
-        {dashboardMode === 'purchase-audit' && (
-          <PurchaseAuditPreview />
+        {/* View 1: AI Shopping Studio (Milestone 5B) */}
+        {dashboardMode === 'shopping-studio' && (
+          <ShoppingStudio
+            journey={journey}
+            onNavigateToAudit={(sessionId) => {
+              setSelectedAuditSessionId(sessionId);
+              setDashboardMode('purchase-audit');
+            }}
+          />
         )}
 
-        {/* View 2: Dispute Evidence Investigation */}
+        {/* View 2: Purchase Audit Preview */}
+        {dashboardMode === 'purchase-audit' && (
+          <PurchaseAuditPreview initialSessionId={selectedAuditSessionId} />
+        )}
+
+        {/* View 3: Dispute Evidence Investigation */}
         {dashboardMode === 'dispute-investigation' && (
           <>
             {/* Lookup Card */}
@@ -279,10 +315,10 @@ export const App: React.FC = () => {
       {/* Footer */}
       <footer className="app-footer">
         <div>
-          <strong>AgentAudit</strong> &bull; Grounded in Immutable Cryptographic Proofs &bull; Hackathon Edition
+          <strong>AgentAudit</strong> • Grounded in Immutable Cryptographic Proofs • Hackathon Edition
         </div>
         <div style={{ marginTop: '0.25rem', fontSize: '0.75rem', color: '#94a3b8' }}>
-          SHA-256 Chain Verification &bull; RFC 8785 Canonical JSON &bull; PayPal Sandbox Integration
+          SHA-256 Chain Verification • RFC 8785 Canonical JSON • PayPal Sandbox Integration
         </div>
       </footer>
     </div>

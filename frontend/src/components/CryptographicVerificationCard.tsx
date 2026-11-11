@@ -13,7 +13,7 @@ export const CryptographicVerificationCard: React.FC<CryptographicVerificationCa
       <div className="section-card-header">
         <div className="section-title-wrap">
           <span className="epistemic-tag verified-fact">VERIFIED_FACT</span>
-          <h3 className="section-card-title">2. Cryptographic Proof &amp; Ledger Verification</h3>
+          <h3 className="section-card-title">2. Cryptographic Proof & Ledger Verification</h3>
         </div>
         <div className="header-badges">
           <span
@@ -102,7 +102,7 @@ export const CryptographicVerificationCard: React.FC<CryptographicVerificationCa
       <div className="disclaimer-callout">
         <div className="callout-icon">🛡️</div>
         <div>
-          <div className="callout-header">Cryptographic Scope &amp; Tamper-Detection Boundary</div>
+          <div className="callout-header">Cryptographic Scope & Tamper-Detection Boundary</div>
           <p className="callout-text">{cryptoProof.integrity_scope_statement}</p>
         </div>
       </div>

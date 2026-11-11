@@ -14,7 +14,7 @@ export const TransactionProofCard: React.FC<TransactionProofCardProps> = ({
         <div className="section-card-header">
           <div className="section-title-wrap">
             <span className="epistemic-tag unavailable">UNAVAILABLE_EVIDENCE</span>
-            <h3 className="section-card-title">4. Transaction Proof &amp; Settlement</h3>
+            <h3 className="section-card-title">4. Transaction Proof & Settlement</h3>
           </div>
         </div>
         <div className="empty-state-notice">
@@ -31,7 +31,7 @@ export const TransactionProofCard: React.FC<TransactionProofCardProps> = ({
       <div className="section-card-header">
         <div className="section-title-wrap">
           <span className="epistemic-tag paypal-data">RECORDED_PAYPAL_DATA</span>
-          <h3 className="section-card-title">4. Transaction Proof &amp; Settlement</h3>
+          <h3 className="section-card-title">4. Transaction Proof & Settlement</h3>
         </div>
         <div className="header-badges">
           <span

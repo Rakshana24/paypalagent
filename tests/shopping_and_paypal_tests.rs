@@ -2,7 +2,7 @@ use axum::body::{to_bytes, Body};
 use axum::extract::Request;
 use axum::http::{header, StatusCode};
 use axum::response::Response;
-use axum::routing::post;
+use axum::routing::{get, post};
 use serde_json::json;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -15,7 +15,8 @@ use agentic_commerce::db::init_db;
 use agentic_commerce::http_client::{create_http_client, HttpClientConfig};
 use agentic_commerce::models::{
     AuthorizePurchaseRequest, AuthorizePurchaseResponse, CaptureOrderResponse, CreateOrderResponse,
-    Product, ShoppingSessionDetail, ShoppingSessionResponse, VerificationStatus,
+    PayPalOrderStatusResponse, Product, ShoppingSessionDetail, ShoppingSessionResponse,
+    VerificationStatus,
 };
 use agentic_commerce::services::{
     CatalogService, LedgerService, PayPalAuthService, PayPalOrdersService, RequirementExtractor,
@@ -37,6 +38,8 @@ struct MockPayPalState {
     order_create_response_body: Arc<RwLock<String>>,
     capture_response_status: Arc<RwLock<StatusCode>>,
     capture_response_body: Arc<RwLock<String>>,
+    order_get_response_status: Arc<RwLock<StatusCode>>,
+    order_get_response_body: Arc<RwLock<String>>,
 }
 
 async fn start_mock_paypal_orders_server(
@@ -54,6 +57,18 @@ async fn start_mock_paypal_orders_server(
         order_create_response_body: Arc::new(RwLock::new(create_body)),
         capture_response_status: Arc::new(RwLock::new(capture_status)),
         capture_response_body: Arc::new(RwLock::new(capture_body)),
+        order_get_response_status: Arc::new(RwLock::new(StatusCode::OK)),
+        order_get_response_body: Arc::new(RwLock::new(
+            json!({
+                "id": "MOCK-ORDER-DEFAULT",
+                "status": "APPROVED",
+                "payer": {
+                    "email_address": "buyer-sandbox@agentic.local",
+                    "payer_id": "BUYER-123456"
+                }
+            })
+            .to_string(),
+        )),
     };
 
     // Handler for OAuth token retrieval (for authentication)
@@ -118,9 +133,26 @@ async fn start_mock_paypal_orders_server(
         }
     };
 
+    // Handler for order lookup: GET /v2/checkout/orders/:id
+    let get_state = state.clone();
+    let order_get_handler = move |_req: Request| {
+        let s = get_state.clone();
+        async move {
+            let status = *s.order_get_response_status.read().await;
+            let body = s.order_get_response_body.read().await.clone();
+
+            Response::builder()
+                .status(status)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(body))
+                .unwrap()
+        }
+    };
+
     let router = axum::Router::new()
         .route("/v1/oauth2/token", post(token_handler))
         .route("/v2/checkout/orders", post(orders_handler))
+        .route("/v2/checkout/orders/:id", get(order_get_handler))
         .route("/v2/checkout/orders/:id/capture", post(capture_handler));
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -934,4 +966,173 @@ async fn test_api_shopping_and_lifecycle_end_to_end() {
     );
     assert_eq!(final_detail.verification.status, VerificationStatus::Valid);
     assert_eq!(final_detail.root_hash, Some(cap_res.final_root_hash));
+}
+
+#[tokio::test]
+async fn test_order_status_before_order_creation_returns_bad_request() {
+    let (_, state) = setup_app_with_paypal_url("http://mock-paypal.local").await;
+
+    let shop_res = state
+        .shopping_agent
+        .process_shopping_request("Buy noise-canceling headphones under $100.")
+        .await
+        .unwrap();
+    let session_id = shop_res.session_id;
+
+    // Calling get_order_status when no PayPal order has been created must fail
+    let status_res = state.paypal_orders.get_order_status(&session_id).await;
+    assert!(
+        status_res.is_err(),
+        "Querying order status before order creation must fail"
+    );
+}
+
+#[tokio::test]
+async fn test_authoritative_paypal_order_status_lifecycle() {
+    let mock_order_id = "PAYPAL-ORDER-AUTH-CHECK";
+    let mock_approval_url =
+        "https://www.sandbox.paypal.com/checkoutnow?token=PAYPAL-ORDER-AUTH-CHECK";
+    let mock_capture_id = "CAPTURE-AUTH-CHECK";
+
+    let create_response_json = json!({
+        "id": mock_order_id,
+        "status": "CREATED",
+        "links": [
+            { "href": mock_approval_url, "rel": "approve", "method": "GET" },
+            { "href": "https://api-m.sandbox.paypal.com/v2/checkout/orders/PAYPAL-ORDER-AUTH-CHECK/capture", "rel": "capture", "method": "POST" }
+        ]
+    })
+    .to_string();
+
+    let capture_response_json = json!({
+        "id": mock_order_id,
+        "status": "COMPLETED",
+        "purchase_units": [
+            {
+                "payments": {
+                    "captures": [
+                        {
+                            "id": mock_capture_id,
+                            "status": "COMPLETED",
+                            "amount": { "currency_code": "USD", "value": "79.99" }
+                        }
+                    ]
+                }
+            }
+        ]
+    })
+    .to_string();
+
+    let (mock_url, mock_paypal_state) = start_mock_paypal_orders_server(
+        StatusCode::CREATED,
+        create_response_json,
+        StatusCode::CREATED,
+        capture_response_json,
+    )
+    .await;
+
+    let (app, state) = setup_app_with_paypal_url(&mock_url).await;
+
+    // 1. Process shopping request
+    let shop_res = state
+        .shopping_agent
+        .process_shopping_request(
+            "Buy noise-canceling headphones under $100 with at least 30 hours battery life.",
+        )
+        .await
+        .unwrap();
+    let session_id = shop_res.session_id;
+    let product_id = shop_res.selected_product.unwrap().product_id;
+
+    // 2. Authorize purchase
+    state
+        .shopping_agent
+        .authorize_purchase(
+            &session_id,
+            AuthorizePurchaseRequest {
+                selected_product_id: product_id,
+                maximum_authorized_amount: 100.0,
+                currency: "USD".to_string(),
+                approved: true,
+            },
+        )
+        .await
+        .unwrap();
+
+    // 3. Create PayPal order
+    state.paypal_orders.create_order(&session_id).await.unwrap();
+
+    // Mock PayPal returning status = "PAYER_ACTION_REQUIRED" (buyer has not approved yet)
+    *mock_paypal_state.order_get_response_body.write().await = json!({
+        "id": mock_order_id,
+        "status": "PAYER_ACTION_REQUIRED"
+    })
+    .to_string();
+
+    // 4. GET /api/shopping/sessions/:id/order-status via HTTP API
+    let req = Request::builder()
+        .method("GET")
+        .uri(format!(
+            "/api/shopping/sessions/{}/order-status",
+            session_id
+        ))
+        .body(Body::empty())
+        .unwrap();
+
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = to_bytes(resp.into_body(), 1024 * 64).await.unwrap();
+    let status_body: PayPalOrderStatusResponse = serde_json::from_slice(&body).unwrap();
+    assert_eq!(status_body.status, "PAYER_ACTION_REQUIRED");
+    assert!(
+        !status_body.is_approved,
+        "PAYER_ACTION_REQUIRED must not be marked as approved"
+    );
+    assert!(!status_body.is_completed);
+
+    // Mock buyer approving the order in PayPal Sandbox UI (status transitions to APPROVED)
+    *mock_paypal_state.order_get_response_body.write().await = json!({
+        "id": mock_order_id,
+        "status": "APPROVED",
+        "payer": {
+            "email_address": "sandbox-buyer-personal@agentic.com",
+            "payer_id": "BUYER-SANDBOX-777"
+        }
+    })
+    .to_string();
+
+    let req = Request::builder()
+        .method("GET")
+        .uri(format!(
+            "/api/shopping/sessions/{}/order-status",
+            session_id
+        ))
+        .body(Body::empty())
+        .unwrap();
+
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = to_bytes(resp.into_body(), 1024 * 64).await.unwrap();
+    let approved_status: PayPalOrderStatusResponse = serde_json::from_slice(&body).unwrap();
+    assert_eq!(approved_status.status, "APPROVED");
+    assert!(
+        approved_status.is_approved,
+        "APPROVED status must set is_approved to true"
+    );
+    assert_eq!(
+        approved_status.payer_email,
+        Some("sandbox-buyer-personal@agentic.com".to_string())
+    );
+    assert_eq!(
+        approved_status.payer_id,
+        Some("BUYER-SANDBOX-777".to_string())
+    );
+
+    // 5. Now capture can proceed
+    let cap_res = state
+        .paypal_orders
+        .capture_order(&session_id)
+        .await
+        .unwrap();
+    assert_eq!(cap_res.status, "COMPLETED");
 }
