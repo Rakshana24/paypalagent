@@ -364,9 +364,10 @@ All backend endpoints are served under `http://127.0.0.1:5000`:
   * `POST /api/sessions/:session_id/finalize`: Finalizes session and seals root hash.
 * **Webhook Ingress**:
   * `POST /api/webhooks/paypal`: Ingests, verifies, and persists PayPal webhooks (max 256 KB).
-* **Dispute Evidence**:
+* **Dispute Evidence & AI Investigation**:
   * `GET /api/disputes/:dispute_id/evidence`: Returns structured evidence brief JSON.
   * `GET /api/disputes/:dispute_id/evidence/markdown`: Returns formatted Markdown evidence brief.
+  * `POST /api/disputes/:dispute_id/ai-investigation`: Synthesizes forensic AI investigation report via Google Gemini with backend-enforced grounding, hallucination removal, and zero-fail deterministic fallback. Supports `{ "force_fallback": true }`.
 
 ---
 
@@ -394,8 +395,39 @@ All backend endpoints are served under `http://127.0.0.1:5000`:
 ### Project Limitations
 * **Deterministic Demo Catalog**: The product catalog is an in-memory collection of 8 headphone models designed for reproducible testing. It is not connected to a live merchant inventory feed.
 * **PayPal Sandbox Only**: The platform is configured for PayPal Sandbox. Live real-money production settlement requires production credentials, PCI compliance review, and business verification.
-* **Embedded SQLite**: SQLite is lightweight and self-contained; high-concurrency production deployments may benefit from migration to PostgreSQL.
+* **Embedded SQLite on Cloud Hosts (Render Free Tier)**: Render's free tier uses ephemeral container disks. Any local SQLite data stored in `data/agentic_commerce.db` will reset upon container spin-down (after 15 minutes of inactivity) or redeployment. Persistent production deployments require either a Render Persistent Disk (paid tier) or an external database.
 * **Single Merchant Model**: The current implementation supports a single merchant Sandbox configuration rather than multi-tenant merchant onboarding.
+
+---
+
+## 11. Deployment Guide (Vercel + Render)
+
+### Backend Deployment (Render Web Service)
+AgentAudit includes a turnkey `render.yaml` Blueprint specification for deploying the Rust/Axum backend on Render:
+1. Connect your GitHub repository to [Render](https://render.com).
+2. Choose **New > Web Service** (or use the Blueprint from `render.yaml`).
+3. Set **Runtime**: `Rust`.
+4. Set **Build Command**: `cargo build --release`.
+5. Set **Start Command**: `./target/release/agentic_commerce`.
+6. Set **Health Check Path**: `/health`.
+7. Configure Environment Variables in Render:
+   * `PORT`: `10000` (Render dynamically sets `$PORT`).
+   * `RUST_LOG`: `info`.
+   * `DATABASE_URL`: `sqlite://data/agentic_commerce.db?mode=rwc`.
+   * `PAYPAL_CLIENT_ID`: Your PayPal Sandbox Client ID.
+   * `PAYPAL_CLIENT_SECRET`: Your PayPal Sandbox Secret (stored securely in Render).
+   * `PAYPAL_WEBHOOK_ID`: Your registered Sandbox Webhook ID.
+   * `GEMINI_API_KEY`: (Optional) Your Google Gemini API key for the AI Dispute Investigator.
+
+### Frontend Deployment (Vercel SPA)
+1. Import your GitHub repository into [Vercel](https://vercel.com).
+2. Set **Root Directory**: `frontend`.
+3. Set **Framework Preset**: `Vite`.
+4. Set **Build Command**: `npm run build`.
+5. Set **Output Directory**: `dist`.
+6. Add Environment Variable:
+   * `VITE_API_BASE_URL`: `https://<your-render-service>.onrender.com` (your deployed Render backend URL).
+   * Alternatively, use Vercel Rewrites via `frontend/vercel.json` to reverse-proxy `/api` to Render.
 
 ---
 

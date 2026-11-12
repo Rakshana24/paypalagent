@@ -89,6 +89,9 @@ pub enum AppError {
 
     #[error("Dispute processing lease expired or fenced out: {0}")]
     DisputeLeaseFencedOut(String),
+
+    #[error("AI provider error: {0}")]
+    AIProvider(String),
 }
 
 impl IntoResponse for AppError {
@@ -128,6 +131,7 @@ impl IntoResponse for AppError {
             AppError::InvalidDisputeState(msg) => (StatusCode::CONFLICT, msg.clone()),
             AppError::InvalidDisputeData(msg) => (StatusCode::BAD_REQUEST, msg.clone()),
             AppError::DisputeAuditIntegrity(msg) => (StatusCode::CONFLICT, msg.clone()),
+            AppError::AIProvider(msg) => (StatusCode::BAD_GATEWAY, msg.clone()),
             AppError::DisputeCorrelationConflict(msg) => (StatusCode::CONFLICT, msg.clone()),
             AppError::MissingAuthoritativeTimestamp(msg) => {
                 (StatusCode::UNPROCESSABLE_ENTITY, msg.clone())

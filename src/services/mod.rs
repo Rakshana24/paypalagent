@@ -1,3 +1,4 @@
+pub mod ai_investigator;
 pub mod auth;
 pub mod catalog;
 pub mod dispute_consumer;
@@ -13,6 +14,7 @@ pub mod verification;
 pub mod webhook_persistence;
 pub mod webhook_verifier;
 
+pub use ai_investigator::*;
 pub use auth::*;
 pub use catalog::*;
 pub use dispute_consumer::*;

@@ -21,6 +21,7 @@ use agentic_commerce::models::webhook::{
     PayPalWebhookEvent, WebhookProcessingStatus, PAYPAL_AUTH_ALGO_HEADER, PAYPAL_CERT_URL_HEADER,
     PAYPAL_TRANSMISSION_ID_HEADER, PAYPAL_TRANSMISSION_SIG_HEADER, PAYPAL_TRANSMISSION_TIME_HEADER,
 };
+use agentic_commerce::services::ai_investigator::AIInvestigatorService;
 use agentic_commerce::services::auth::PayPalAuthService;
 use agentic_commerce::services::dispute_consumer::DisputeConsumerService;
 use agentic_commerce::services::dispute_correlation::DisputeCorrelationService;
@@ -119,6 +120,7 @@ async fn setup_worker_test_context() -> WorkerTestContext {
         paypal_client_id: "test-client-id".to_string(),
         paypal_client_secret: "test-client-secret".to_string(),
         paypal_webhook_id: Some("WH-WORKER-TEST-12345".to_string()),
+        ..Default::default()
     });
 
     let http_client = create_http_client(&HttpClientConfig::default()).unwrap();
@@ -175,6 +177,11 @@ async fn setup_worker_test_context() -> WorkerTestContext {
         verification_service.clone(),
     ));
 
+    let ai_investigator = Arc::new(AIInvestigatorService::new(
+        config.clone(),
+        http_client.clone(),
+    ));
+
     let state = AppState {
         config,
         http_client,
@@ -188,6 +195,7 @@ async fn setup_worker_test_context() -> WorkerTestContext {
         webhook_persistence: persistence_service.clone(),
         webhook_notify: webhook_notify.clone(),
         dispute_evidence,
+        ai_investigator,
     };
 
     let router = create_router(state);

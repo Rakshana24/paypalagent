@@ -178,6 +178,7 @@ async fn setup_app_with_paypal_url(base_url: &str) -> (axum::Router, AppState) {
         rust_log: "info".to_string(),
         database_url: "sqlite::memory:".to_string(),
         paypal_webhook_id: None,
+        ..Default::default()
     });
 
     let http_client = create_http_client(&HttpClientConfig::default()).unwrap();
@@ -215,6 +216,11 @@ async fn setup_app_with_paypal_url(base_url: &str) -> (axum::Router, AppState) {
         verification_service.clone(),
     ));
 
+    let ai_investigator = Arc::new(agentic_commerce::services::AIInvestigatorService::new(
+        config.clone(),
+        http_client.clone(),
+    ));
+
     let state = AppState {
         config,
         http_client,
@@ -228,6 +234,7 @@ async fn setup_app_with_paypal_url(base_url: &str) -> (axum::Router, AppState) {
         webhook_persistence,
         webhook_notify: std::sync::Arc::new(tokio::sync::Notify::new()),
         dispute_evidence,
+        ai_investigator,
     };
 
     let router = create_router(state.clone());

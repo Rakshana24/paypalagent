@@ -302,6 +302,7 @@ mod tests {
             paypal_client_id: "mock_client".to_string(),
             paypal_client_secret: "mock_secret".to_string(),
             paypal_webhook_id: Some("mock_webhook_id".to_string()),
+            ..Default::default()
         });
 
         let http_client = create_http_client(&HttpClientConfig::default()).unwrap();

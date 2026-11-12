@@ -406,3 +406,71 @@ export interface DecisionStep {
   current_hash: string;
   created_at: string;
 }
+
+// =========================================================================
+// AI DISPUTE INVESTIGATOR TYPES
+// =========================================================================
+
+export type FindingSeverity = 'LOW' | 'MEDIUM' | 'HIGH';
+
+export interface TimelineNarrativeItem {
+  phase: string;
+  description: string;
+  evidence_id: string;
+  evidence_type: EpistemicCategory;
+}
+
+export interface InconsistencyFinding {
+  severity: FindingSeverity;
+  finding: string;
+  details: string;
+  evidence_ref: string;
+}
+
+export interface SupportingEvidenceItem {
+  claim: string;
+  source: string;
+  evidence_id: string;
+}
+
+export interface ContradictingEvidenceItem {
+  fact: string;
+  source: string;
+  evidence_id: string;
+  hash_verified: boolean;
+  epistemic_category: EpistemicCategory;
+}
+
+export interface MissingEvidenceDisclaimerItem {
+  item: string;
+  reason_unavailable: string;
+}
+
+export interface RecommendedActionItem {
+  priority: number;
+  action: string;
+  rationale: string;
+}
+
+export interface AIDisputeInvestigationReport {
+  dispute_id: string;
+  session_id?: string | null;
+  generated_at: string;
+  provider: string;
+  provider_note: string;
+  is_ai_generated: boolean;
+  ledger_hash_verified: boolean;
+  executive_summary: string;
+  narrative_timeline: TimelineNarrativeItem[];
+  inconsistencies_or_red_flags: InconsistencyFinding[];
+  evidence_supporting_dispute: SupportingEvidenceItem[];
+  evidence_contradicting_dispute: ContradictingEvidenceItem[];
+  missing_evidence: MissingEvidenceDisclaimerItem[];
+  recommended_next_steps: RecommendedActionItem[];
+  valid_evidence_references: string[];
+  discarded_unverified_references: string[];
+}
+
+export interface AIInvestigationRequest {
+  force_fallback?: boolean;
+}

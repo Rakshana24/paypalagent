@@ -12,6 +12,20 @@ pub const DEFAULT_RUST_LOG: &str = "agentic_commerce=info,tower_http=info,axum=i
 /// Default database URL.
 pub const DEFAULT_DATABASE_URL: &str = "sqlite:data/agentic_commerce.db?mode=rwc";
 
+/// Default Google Gemini model candidate.
+pub const DEFAULT_GEMINI_MODEL: &str = "gemini-3.8-flash";
+
+/// Default Google Gemini API base URL.
+pub const DEFAULT_GEMINI_BASE_URL: &str = "https://generativelanguage.googleapis.com";
+
+fn default_gemini_model() -> String {
+    DEFAULT_GEMINI_MODEL.to_string()
+}
+
+fn default_gemini_base_url() -> String {
+    DEFAULT_GEMINI_BASE_URL.to_string()
+}
+
 /// Centralized application configuration.
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Config {
@@ -37,6 +51,18 @@ pub struct Config {
     /// PayPal Webhook ID for signature verification (optional until webhook processing is enabled).
     #[serde(default)]
     pub paypal_webhook_id: Option<String>,
+
+    /// Optional Google Gemini API key for AI dispute investigation (kept private; skipped in serialization).
+    #[serde(skip_serializing, default)]
+    pub gemini_api_key: Option<String>,
+
+    /// Configurable Google Gemini model candidate (defaults to "gemini-3.8-flash").
+    #[serde(default = "default_gemini_model")]
+    pub gemini_model: String,
+
+    /// Configurable Google Gemini API base URL (defaults to "https://generativelanguage.googleapis.com").
+    #[serde(default = "default_gemini_base_url")]
+    pub gemini_base_url: String,
 }
 
 impl Config {
@@ -67,6 +93,23 @@ impl Config {
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty());
 
+        let gemini_api_key = std::env::var("GEMINI_API_KEY")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+
+        let gemini_model = std::env::var("GEMINI_MODEL")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| DEFAULT_GEMINI_MODEL.to_string());
+
+        let gemini_base_url = std::env::var("GEMINI_BASE_URL")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| DEFAULT_GEMINI_BASE_URL.to_string());
+
         Self {
             port,
             rust_log,
@@ -75,6 +118,9 @@ impl Config {
             paypal_client_id,
             paypal_client_secret,
             paypal_webhook_id,
+            gemini_api_key,
+            gemini_model,
+            gemini_base_url,
         }
     }
 
@@ -99,6 +145,9 @@ impl Default for Config {
             paypal_client_id: String::new(),
             paypal_client_secret: String::new(),
             paypal_webhook_id: None,
+            gemini_api_key: None,
+            gemini_model: DEFAULT_GEMINI_MODEL.to_string(),
+            gemini_base_url: DEFAULT_GEMINI_BASE_URL.to_string(),
         }
     }
 }
@@ -114,6 +163,12 @@ impl std::fmt::Debug for Config {
             .field("paypal_client_id", &self.paypal_client_id)
             .field("paypal_client_secret", &"[REDACTED]")
             .field("paypal_webhook_id", &self.paypal_webhook_id)
+            .field(
+                "gemini_api_key",
+                &self.gemini_api_key.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field("gemini_model", &self.gemini_model)
+            .field("gemini_base_url", &self.gemini_base_url)
             .finish()
     }
 }
@@ -131,6 +186,9 @@ mod tests {
         assert_eq!(config.rust_log, DEFAULT_RUST_LOG);
         assert!(config.paypal_client_id.is_empty());
         assert!(config.paypal_client_secret.is_empty());
+        assert_eq!(config.gemini_model, "gemini-3.8-flash");
+        assert_eq!(config.gemini_base_url, DEFAULT_GEMINI_BASE_URL);
+        assert!(config.gemini_api_key.is_none());
     }
 
     #[test]
@@ -143,12 +201,17 @@ mod tests {
             paypal_client_id: "test_client_id".to_string(),
             paypal_client_secret: "super_secret_key_12345".to_string(),
             paypal_webhook_id: Some("WH-TEST-12345".to_string()),
+            gemini_api_key: Some("gemini_secret_api_key_999".to_string()),
+            gemini_model: "gemini-3.8-flash".to_string(),
+            gemini_base_url: DEFAULT_GEMINI_BASE_URL.to_string(),
         };
 
         let debug_output = format!("{:?}", config);
         assert!(!debug_output.contains("super_secret_key_12345"));
+        assert!(!debug_output.contains("gemini_secret_api_key_999"));
         assert!(debug_output.contains("[REDACTED]"));
         assert!(debug_output.contains("WH-TEST-12345"));
+        assert!(debug_output.contains("gemini-3.8-flash"));
     }
 
     #[test]
@@ -161,11 +224,17 @@ mod tests {
             paypal_client_id: "test_client_id".to_string(),
             paypal_client_secret: "super_secret_key_12345".to_string(),
             paypal_webhook_id: None,
+            gemini_api_key: Some("gemini_secret_api_key_999".to_string()),
+            gemini_model: "gemini-3.8-flash".to_string(),
+            gemini_base_url: DEFAULT_GEMINI_BASE_URL.to_string(),
         };
 
         let json = serde_json::to_string(&config).unwrap();
         assert!(!json.contains("super_secret_key_12345"));
         assert!(!json.contains("paypal_client_secret"));
+        assert!(!json.contains("gemini_secret_api_key_999"));
+        assert!(!json.contains("gemini_api_key"));
+        assert!(json.contains("gemini-3.8-flash"));
     }
 
     #[test]

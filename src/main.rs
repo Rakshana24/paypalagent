@@ -6,10 +6,10 @@ use agentic_commerce::config::Config;
 use agentic_commerce::db::init_db;
 use agentic_commerce::http_client::{create_http_client, HttpClientConfig};
 use agentic_commerce::services::{
-    BackgroundDisputeWorker, CancellationToken, CatalogService, DisputeConsumerService,
-    DisputeCorrelationService, DisputeEvidenceService, DisputeService, LedgerService,
-    PayPalAuthService, PayPalOrdersService, ShoppingAgentService, VerificationService,
-    WebhookPersistenceService, WebhookVerifierService,
+    AIInvestigatorService, BackgroundDisputeWorker, CancellationToken, CatalogService,
+    DisputeConsumerService, DisputeCorrelationService, DisputeEvidenceService, DisputeService,
+    LedgerService, PayPalAuthService, PayPalOrdersService, ShoppingAgentService,
+    VerificationService, WebhookPersistenceService, WebhookVerifierService,
 };
 use agentic_commerce::{create_router, AppState};
 
@@ -126,6 +126,11 @@ async fn main() {
         verification_service.clone(),
     ));
 
+    let ai_investigator = Arc::new(AIInvestigatorService::new(
+        config_arc.clone(),
+        http_client.clone(),
+    ));
+
     // Shared notification channel between HTTP ingress and background worker
     let webhook_notify = Arc::new(tokio::sync::Notify::new());
 
@@ -154,11 +159,12 @@ async fn main() {
         webhook_persistence,
         webhook_notify: webhook_notify.clone(),
         dispute_evidence,
+        ai_investigator,
     };
 
     let app = create_router(state);
 
-    let addr = SocketAddr::from(([127, 0, 0, 1], config.port));
+    let addr = SocketAddr::from(([0, 0, 0, 0], config.port));
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .unwrap_or_else(|e| panic!("Failed to bind TCP listener to {}: {}", addr, e));

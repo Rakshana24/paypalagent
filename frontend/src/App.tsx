@@ -19,6 +19,7 @@ import { CryptographicVerificationCard } from './components/CryptographicVerific
 import { AgentDecisionTimeline } from './components/AgentDecisionTimeline';
 import { TransactionProofCard } from './components/TransactionProofCard';
 import { RebuttalSection } from './components/RebuttalSection';
+import { AIDisputeInvestigatorCard } from './components/AIDisputeInvestigatorCard';
 import { MarkdownViewer } from './components/MarkdownViewer';
 import { PurchaseAuditPreview } from './components/PurchaseAuditPreview';
 import { ShoppingStudio } from './components/ShoppingStudio';
@@ -256,6 +257,9 @@ export const App: React.FC = () => {
                       disputeSummary={evidenceBrief.dispute_summary}
                       correlationSummary={evidenceBrief.correlation_summary}
                     />
+
+                    {/* AI Dispute Investigator */}
+                    <AIDisputeInvestigatorCard disputeId={currentDisputeId} />
 
                     {/* 2. Cryptographic Proof & Ledger Integrity */}
                     <CryptographicVerificationCard

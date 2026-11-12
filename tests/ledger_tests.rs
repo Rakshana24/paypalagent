@@ -34,6 +34,7 @@ async fn setup_test_app() -> (axum::Router, sqlx::SqlitePool) {
         rust_log: "info".to_string(),
         database_url: "sqlite::memory:".to_string(),
         paypal_webhook_id: None,
+        ..Default::default()
     });
 
     let http_client =
@@ -72,6 +73,11 @@ async fn setup_test_app() -> (axum::Router, sqlx::SqlitePool) {
         verification_service.clone(),
     ));
 
+    let ai_investigator = Arc::new(agentic_commerce::services::AIInvestigatorService::new(
+        config.clone(),
+        http_client.clone(),
+    ));
+
     let state = AppState {
         config,
         http_client,
@@ -85,6 +91,7 @@ async fn setup_test_app() -> (axum::Router, sqlx::SqlitePool) {
         webhook_persistence,
         webhook_notify: std::sync::Arc::new(tokio::sync::Notify::new()),
         dispute_evidence,
+        ai_investigator,
     };
 
     let router = agentic_commerce::create_router(state);

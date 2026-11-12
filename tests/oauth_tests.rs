@@ -104,6 +104,7 @@ fn create_test_config(base_url: &str) -> Config {
         paypal_client_secret: "test_client_secret_xyz".to_string(),
         database_url: "sqlite::memory:".to_string(),
         paypal_webhook_id: None,
+        ..Default::default()
     }
 }
 
@@ -398,6 +399,11 @@ async fn test_auth_check_endpoint_integration() {
         verification_service.clone(),
     ));
 
+    let ai_investigator = Arc::new(agentic_commerce::services::AIInvestigatorService::new(
+        config.clone(),
+        http_client.clone(),
+    ));
+
     let state = AppState {
         config: config.clone(),
         http_client,
@@ -411,6 +417,7 @@ async fn test_auth_check_endpoint_integration() {
         webhook_persistence,
         webhook_notify: std::sync::Arc::new(tokio::sync::Notify::new()),
         dispute_evidence,
+        ai_investigator,
     };
 
     let router = create_router(state);

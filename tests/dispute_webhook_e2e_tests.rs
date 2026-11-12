@@ -139,6 +139,7 @@ async fn setup_e2e_test_context(
         paypal_client_id: "test-client-id".to_string(),
         paypal_client_secret: "test-client-secret".to_string(),
         paypal_webhook_id: Some("WH-E2E-TEST-ID".to_string()),
+        ..Default::default()
     });
 
     let http_client = create_http_client(&HttpClientConfig::default()).unwrap();
@@ -192,6 +193,11 @@ async fn setup_e2e_test_context(
         verification_service.clone(),
     ));
 
+    let ai_investigator = Arc::new(agentic_commerce::services::AIInvestigatorService::new(
+        config.clone(),
+        http_client.clone(),
+    ));
+
     let state = AppState {
         config,
         http_client,
@@ -205,6 +211,7 @@ async fn setup_e2e_test_context(
         webhook_persistence: persistence_service.clone(),
         webhook_notify: Arc::new(tokio::sync::Notify::new()),
         dispute_evidence,
+        ai_investigator,
     };
 
     let router = create_router(state);

@@ -123,6 +123,7 @@ async fn setup_test_app(
         paypal_client_id: "test-client-id".to_string(),
         paypal_client_secret: "test-client-secret".to_string(),
         paypal_webhook_id: webhook_id.or_else(|| Some("WH-TEST-ID-12345".to_string())),
+        ..Default::default()
     });
 
     let http_client = create_http_client(&HttpClientConfig::default()).unwrap();
@@ -161,6 +162,11 @@ async fn setup_test_app(
         verification_service.clone(),
     ));
 
+    let ai_investigator = Arc::new(agentic_commerce::services::AIInvestigatorService::new(
+        config.clone(),
+        http_client.clone(),
+    ));
+
     let state = AppState {
         config,
         http_client,
@@ -174,6 +180,7 @@ async fn setup_test_app(
         webhook_persistence,
         webhook_notify: webhook_notify.clone(),
         dispute_evidence,
+        ai_investigator,
     };
 
     let router = create_router(state);

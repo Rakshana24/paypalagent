@@ -20,9 +20,9 @@ use agentic_commerce::models::dispute::{
 use agentic_commerce::models::evidence::{DisputeEvidenceBrief, EpistemicCategory};
 use agentic_commerce::models::ledger::{AppendEventRequest, CreateSessionRequest};
 use agentic_commerce::services::{
-    CatalogService, DisputeEvidenceService, DisputeService, LedgerService, PayPalAuthService,
-    PayPalOrdersService, ShoppingAgentService, VerificationService, WebhookPersistenceService,
-    WebhookVerifierService,
+    AIInvestigatorService, CatalogService, DisputeEvidenceService, DisputeService, LedgerService,
+    PayPalAuthService, PayPalOrdersService, ShoppingAgentService, VerificationService,
+    WebhookPersistenceService, WebhookVerifierService,
 };
 use agentic_commerce::AppState;
 
@@ -77,6 +77,11 @@ async fn setup_api_test_context() -> ApiTestContext {
         verification_service.clone(),
     ));
 
+    let ai_investigator = Arc::new(AIInvestigatorService::new(
+        config.clone(),
+        http_client.clone(),
+    ));
+
     let state = AppState {
         config,
         http_client,
@@ -90,6 +95,7 @@ async fn setup_api_test_context() -> ApiTestContext {
         webhook_persistence,
         webhook_notify: Arc::new(tokio::sync::Notify::new()),
         dispute_evidence,
+        ai_investigator,
     };
 
     let router = create_router(state);

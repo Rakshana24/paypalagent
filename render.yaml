@@ -1,0 +1,29 @@
+services:
+  - type: web
+    name: agentic-commerce-backend
+    runtime: rust
+    plan: free
+    buildCommand: cargo build --release
+    startCommand: ./target/release/agentic_commerce
+    healthCheckPath: /health
+    envVars:
+      - key: PORT
+        value: 10000
+      - key: RUST_LOG
+        value: info
+      - key: DATABASE_URL
+        value: sqlite://data/agentic_commerce.db?mode=rwc
+      - key: PAYPAL_BASE_URL
+        value: https://api-m.sandbox.paypal.com
+      - key: PAYPAL_CLIENT_ID
+        sync: false
+      - key: PAYPAL_CLIENT_SECRET
+        sync: false
+      - key: PAYPAL_WEBHOOK_ID
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GEMINI_MODEL
+        value: gemini-3.8-flash
+      - key: GEMINI_BASE_URL
+        value: https://generativelanguage.googleapis.com

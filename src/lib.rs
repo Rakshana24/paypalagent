@@ -19,6 +19,7 @@ use config::Config;
 use error::AppError;
 use models::webhook::{PayPalWebhookEvent, PayPalWebhookHeaders, WebhookPersistenceResult};
 use models::{
+    ai_investigation::{AIDisputeInvestigationReport, AIInvestigationRequest},
     AppendEventRequest, AppendEventResponse, AuthCheckResponse, AuthorizePurchaseRequest,
     AuthorizePurchaseResponse, CaptureOrderResponse, CreateOrderResponse, CreateSessionRequest,
     CreateSessionResponse, DecisionStep, FinalizeSessionResponse, HealthResponse,
@@ -26,8 +27,9 @@ use models::{
     ShoppingSessionResponse, VerificationResult,
 };
 use services::{
-    CatalogService, DisputeEvidenceService, LedgerService, PayPalAuthService, PayPalOrdersService,
-    ShoppingAgentService, VerificationService, WebhookPersistenceService, WebhookVerifierService,
+    ai_investigator::AIInvestigatorService, CatalogService, DisputeEvidenceService, LedgerService,
+    PayPalAuthService, PayPalOrdersService, ShoppingAgentService, VerificationService,
+    WebhookPersistenceService, WebhookVerifierService,
 };
 
 /// Shared application state across HTTP handlers.
@@ -45,6 +47,7 @@ pub struct AppState {
     pub webhook_persistence: Arc<WebhookPersistenceService>,
     pub webhook_notify: Arc<tokio::sync::Notify>,
     pub dispute_evidence: Arc<DisputeEvidenceService>,
+    pub ai_investigator: Arc<AIInvestigatorService>,
 }
 
 /// GET /health handler returning operational status.
@@ -316,6 +319,39 @@ pub async fn get_dispute_evidence_markdown(
     ))
 }
 
+/// POST /api/disputes/:dispute_id/ai-investigation handler to synthesize an AI forensic report.
+///
+/// Accepts an optional request body containing `force_fallback`. When Gemini is unconfigured
+/// or offline, automatically and safely falls back to the deterministic audit engine.
+/// This endpoint is strictly read-only and never modifies the underlying ledger.
+pub async fn investigate_dispute(
+    State(state): State<AppState>,
+    Path(dispute_id): Path<String>,
+    body_bytes: Bytes,
+) -> Result<Json<AIDisputeInvestigationReport>, AppError> {
+    let req: AIInvestigationRequest = if body_bytes.is_empty() {
+        AIInvestigationRequest::default()
+    } else {
+        serde_json::from_slice(&body_bytes).map_err(|e| {
+            AppError::InvalidPayload(format!("Invalid investigation request: {}", e))
+        })?
+    };
+
+    // 1. Authoritatively retrieve the dispute evidence brief
+    let brief = state
+        .dispute_evidence
+        .generate_evidence_brief(&dispute_id)
+        .await?;
+
+    // 2. Synthesize AI dispute investigation report
+    let report = state
+        .ai_investigator
+        .investigate(&brief, req.force_fallback)
+        .await?;
+
+    Ok(Json(report))
+}
+
 /// Builds the Axum application router with shared state.
 pub fn create_router(state: AppState) -> Router {
     Router::new()
@@ -373,6 +409,11 @@ pub fn create_router(state: AppState) -> Router {
         .route(
             "/api/disputes/:dispute_id/evidence/markdown",
             get(get_dispute_evidence_markdown),
+        )
+        // Phase 6 AI Dispute Investigation Route
+        .route(
+            "/api/disputes/:dispute_id/ai-investigation",
+            post(investigate_dispute),
         )
         .with_state(state)
 }

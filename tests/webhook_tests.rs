@@ -153,6 +153,7 @@ async fn test_successful_webhook_signature_verification() {
         paypal_client_id: "test-client-id".to_string(),
         paypal_client_secret: "test-client-secret".to_string(),
         paypal_webhook_id: Some("WH-CONFIGURED-ID-123".to_string()),
+        ..Default::default()
     });
 
     let client = create_http_client(&HttpClientConfig::default()).unwrap();
@@ -205,6 +206,7 @@ async fn test_failed_webhook_signature_verification() {
         paypal_client_id: "test-client-id".to_string(),
         paypal_client_secret: "test-client-secret".to_string(),
         paypal_webhook_id: Some("WH-CONFIGURED-ID-123".to_string()),
+        ..Default::default()
     });
 
     let client = create_http_client(&HttpClientConfig::default()).unwrap();
@@ -284,6 +286,7 @@ async fn test_invalid_verification_response_payload() {
         paypal_client_id: "test-client-id".to_string(),
         paypal_client_secret: "test-client-secret".to_string(),
         paypal_webhook_id: Some("WH-123".to_string()),
+        ..Default::default()
     });
 
     let client = create_http_client(&HttpClientConfig::default()).unwrap();
@@ -315,6 +318,7 @@ async fn test_paypal_verification_api_error() {
         paypal_client_id: "test-client-id".to_string(),
         paypal_client_secret: "test-client-secret".to_string(),
         paypal_webhook_id: Some("WH-123".to_string()),
+        ..Default::default()
     });
 
     let client = create_http_client(&HttpClientConfig::default()).unwrap();
@@ -351,6 +355,7 @@ async fn test_network_timeout() {
         paypal_client_id: "test-client-id".to_string(),
         paypal_client_secret: "test-client-secret".to_string(),
         paypal_webhook_id: Some("WH-123".to_string()),
+        ..Default::default()
     });
 
     // Configure HTTP client with tight 50ms timeout
@@ -385,6 +390,7 @@ async fn test_existing_oauth_service_compatibility() {
         paypal_client_id: "test-client-id".to_string(),
         paypal_client_secret: "test-client-secret".to_string(),
         paypal_webhook_id: Some("WH-123".to_string()),
+        ..Default::default()
     });
 
     let client = create_http_client(&HttpClientConfig::default()).unwrap();
@@ -421,6 +427,7 @@ async fn test_unconfigured_webhook_id_fails_fast() {
         paypal_client_id: "test-client-id".to_string(),
         paypal_client_secret: "test-client-secret".to_string(),
         paypal_webhook_id: None, // Missing
+        ..Default::default()
     });
 
     let client = create_http_client(&HttpClientConfig::default()).unwrap();
@@ -469,6 +476,7 @@ async fn test_verify_signature_raw_status_returns_enum_directly() {
         paypal_client_id: "test-client-id".to_string(),
         paypal_client_secret: "test-client-secret".to_string(),
         paypal_webhook_id: Some("WH-123".to_string()),
+        ..Default::default()
     });
 
     let client = create_http_client(&HttpClientConfig::default()).unwrap();
@@ -499,6 +507,7 @@ async fn test_untrusted_cert_url_rejected_before_calling_paypal() {
         paypal_client_id: "test-client-id".to_string(),
         paypal_client_secret: "test-client-secret".to_string(),
         paypal_webhook_id: Some("WH-123".to_string()),
+        ..Default::default()
     });
 
     let client = create_http_client(&HttpClientConfig::default()).unwrap();
@@ -535,6 +544,7 @@ async fn test_verify_signature_with_raw_bytes_success() {
         paypal_client_id: "test-client-id".to_string(),
         paypal_client_secret: "test-client-secret".to_string(),
         paypal_webhook_id: Some("WH-CONFIGURED-ID-123".to_string()),
+        ..Default::default()
     });
 
     let client = create_http_client(&HttpClientConfig::default()).unwrap();
@@ -568,6 +578,7 @@ async fn test_verify_signature_with_raw_bytes_failure_preserves_strict_rejection
         paypal_client_id: "test-client-id".to_string(),
         paypal_client_secret: "test-client-secret".to_string(),
         paypal_webhook_id: Some("WH-CONFIGURED-ID-123".to_string()),
+        ..Default::default()
     });
 
     let client = create_http_client(&HttpClientConfig::default()).unwrap();
@@ -610,6 +621,7 @@ async fn test_sanitized_paypal_http_error_redacts_tokens() {
         paypal_client_id: "test-client-id".to_string(),
         paypal_client_secret: "test-client-secret".to_string(),
         paypal_webhook_id: Some("WH-123".to_string()),
+        ..Default::default()
     });
 
     let client = create_http_client(&HttpClientConfig::default()).unwrap();

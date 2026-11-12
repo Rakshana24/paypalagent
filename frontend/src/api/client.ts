@@ -13,6 +13,8 @@ import type {
   CaptureOrderResponse,
   PayPalOrderStatusResponse,
   VerificationResult,
+  AIDisputeInvestigationReport,
+  AIInvestigationRequest,
 } from '../types/api';
 
 export class ApiClientError extends Error {
@@ -25,6 +27,13 @@ export class ApiClientError extends Error {
     this.status = status;
     this.data = data;
   }
+}
+
+const API_BASE = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '');
+
+function apiUrl(path: string): string {
+  const cleanPath = path.startsWith('/') ? path : `/${path}`;
+  return `${API_BASE}${cleanPath}`;
 }
 
 async function handleResponse<T>(res: Response): Promise<T> {
@@ -44,12 +53,12 @@ async function handleResponse<T>(res: Response): Promise<T> {
 }
 
 export async function fetchHealth(): Promise<HealthResponse> {
-  const res = await fetch('/health');
+  const res = await fetch(apiUrl('/health'));
   return handleResponse<HealthResponse>(res);
 }
 
 export async function fetchPaypalAuthCheck(): Promise<AuthCheckResponse> {
-  const res = await fetch('/api/paypal/auth-check');
+  const res = await fetch(apiUrl('/api/paypal/auth-check'));
   return handleResponse<AuthCheckResponse>(res);
 }
 
@@ -60,7 +69,7 @@ export async function fetchDisputeEvidence(
   if (!trimmed) {
     throw new ApiClientError('Dispute ID cannot be empty', 400);
   }
-  const res = await fetch(`/api/disputes/${encodeURIComponent(trimmed)}/evidence`);
+  const res = await fetch(apiUrl(`/api/disputes/${encodeURIComponent(trimmed)}/evidence`));
   return handleResponse<DisputeEvidenceBrief>(res);
 }
 
@@ -72,7 +81,7 @@ export async function fetchDisputeEvidenceMarkdown(
     throw new ApiClientError('Dispute ID cannot be empty', 400);
   }
   const res = await fetch(
-    `/api/disputes/${encodeURIComponent(trimmed)}/evidence/markdown`
+    apiUrl(`/api/disputes/${encodeURIComponent(trimmed)}/evidence/markdown`)
   );
   if (!res.ok) {
     let errorData: unknown;
@@ -96,7 +105,7 @@ export async function fetchShoppingSession(
   if (!trimmed) {
     throw new ApiClientError('Session ID cannot be empty', 400);
   }
-  const res = await fetch(`/api/shopping/sessions/${encodeURIComponent(trimmed)}`);
+  const res = await fetch(apiUrl(`/api/shopping/sessions/${encodeURIComponent(trimmed)}`));
   return handleResponse<ShoppingSessionDetail>(res);
 }
 
@@ -107,12 +116,12 @@ export async function fetchSessionEvents(
   if (!trimmed) {
     throw new ApiClientError('Session ID cannot be empty', 400);
   }
-  const res = await fetch(`/api/sessions/${encodeURIComponent(trimmed)}/events`);
+  const res = await fetch(apiUrl(`/api/sessions/${encodeURIComponent(trimmed)}/events`));
   return handleResponse<DecisionStep[]>(res);
 }
 
 export async function fetchCatalogProducts(): Promise<Product[]> {
-  const res = await fetch('/api/catalog/products');
+  const res = await fetch(apiUrl('/api/catalog/products'));
   return handleResponse<Product[]>(res);
 }
 
@@ -123,7 +132,7 @@ export async function createShoppingSession(
   if (!trimmed) {
     throw new ApiClientError('Shopping prompt cannot be empty', 400);
   }
-  const res = await fetch('/api/shopping/sessions', {
+  const res = await fetch(apiUrl('/api/shopping/sessions'), {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -142,7 +151,7 @@ export async function authorizePurchase(
     throw new ApiClientError('Session ID cannot be empty', 400);
   }
   const res = await fetch(
-    `/api/shopping/sessions/${encodeURIComponent(trimmed)}/authorize`,
+    apiUrl(`/api/shopping/sessions/${encodeURIComponent(trimmed)}/authorize`),
     {
       method: 'POST',
       headers: {
@@ -162,7 +171,7 @@ export async function createPayPalOrder(
     throw new ApiClientError('Session ID cannot be empty', 400);
   }
   const res = await fetch(
-    `/api/shopping/sessions/${encodeURIComponent(trimmed)}/orders`,
+    apiUrl(`/api/shopping/sessions/${encodeURIComponent(trimmed)}/orders`),
     {
       method: 'POST',
       headers: {
@@ -181,7 +190,7 @@ export async function capturePayPalOrder(
     throw new ApiClientError('Session ID cannot be empty', 400);
   }
   const res = await fetch(
-    `/api/shopping/sessions/${encodeURIComponent(trimmed)}/capture`,
+    apiUrl(`/api/shopping/sessions/${encodeURIComponent(trimmed)}/capture`),
     {
       method: 'POST',
       headers: {
@@ -200,7 +209,7 @@ export async function fetchPayPalOrderStatus(
     throw new ApiClientError('Session ID cannot be empty', 400);
   }
   const res = await fetch(
-    `/api/shopping/sessions/${encodeURIComponent(trimmed)}/order-status`
+    apiUrl(`/api/shopping/sessions/${encodeURIComponent(trimmed)}/order-status`)
   );
   return handleResponse<PayPalOrderStatusResponse>(res);
 }
@@ -212,6 +221,27 @@ export async function verifySession(
   if (!trimmed) {
     throw new ApiClientError('Session ID cannot be empty', 400);
   }
-  const res = await fetch(`/api/sessions/${encodeURIComponent(trimmed)}/verify`);
+  const res = await fetch(apiUrl(`/api/sessions/${encodeURIComponent(trimmed)}/verify`));
   return handleResponse<VerificationResult>(res);
+}
+
+export async function runDisputeAiInvestigation(
+  disputeId: string,
+  options?: AIInvestigationRequest
+): Promise<AIDisputeInvestigationReport> {
+  const trimmed = disputeId.trim();
+  if (!trimmed) {
+    throw new ApiClientError('Dispute ID cannot be empty', 400);
+  }
+  const res = await fetch(
+    apiUrl(`/api/disputes/${encodeURIComponent(trimmed)}/ai-investigation`),
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(options ?? {}),
+    }
+  );
+  return handleResponse<AIDisputeInvestigationReport>(res);
 }

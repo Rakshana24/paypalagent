@@ -1,3 +1,4 @@
+pub mod ai_investigation;
 pub mod authorization;
 pub mod catalog;
 pub mod config;
@@ -12,6 +13,7 @@ pub mod paypal_orders;
 pub mod shopping;
 pub mod webhook;
 
+pub use ai_investigation::*;
 pub use authorization::*;
 pub use catalog::*;
 pub use config::*;
